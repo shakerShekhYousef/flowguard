@@ -1,0 +1,19 @@
+version: 1
+
+target:
+  base_url: http://127.0.0.1:8080
+  allowed_hosts: [127.0.0.1, localhost]
+
+scenarios:
+  - name: charge-once
+    kind: idempotency
+    request:
+      method: POST
+      path: /orders
+      headers:
+        Idempotency-Key: test-order-001
+      json: {customer_id: demo, amount: 100}
+    repeat: 2
+    assert:
+      status: 200
+      business_effect_count: 1

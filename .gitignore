@@ -1,0 +1,4 @@
+/flowguard
+*.test
+report.json
+/bin/
