@@ -186,6 +186,13 @@ func (t *Target) validate() error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("base_url scheme %q is not supported (use http or https)", u.Scheme)
 	}
+	// Request paths are resolved against the host root, so a base path would
+	// be silently dropped and the scenario would test a different endpoint.
+	// Path joining is not supported in v0.1; reject instead of guessing.
+	if u.Path != "" && u.Path != "/" {
+		return fmt.Errorf("base_url path %q is not supported: use base_url %s://%s and put the prefix in each request path (e.g. path: %s/orders)",
+			u.Path, u.Scheme, u.Host, strings.TrimRight(u.Path, "/"))
+	}
 	if len(t.AllowedHosts) == 0 {
 		return fmt.Errorf("allowed_hosts must list at least one host (fail closed by default)")
 	}

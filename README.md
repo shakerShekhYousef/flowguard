@@ -51,6 +51,11 @@ Run it:
 flowguard test --config flowguard.yaml --report report.json
 ```
 
+`base_url` must be just a scheme and host (with optional port), such as
+`http://127.0.0.1:8080`. A path prefix like `/api/v1` is rejected, since it
+would otherwise be ignored and the scenario would test a different endpoint.
+Put the prefix in each request path instead (`path: /api/v1/orders`).
+
 FlowGuard learns the business-effect count from a test-state endpoint on the
 target; see [docs/test-state.md](docs/test-state.md) for the contract.
 

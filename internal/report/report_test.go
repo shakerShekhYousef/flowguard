@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -132,3 +133,54 @@ func TestBuild_StatusFailureDetails(t *testing.T) {
 }
 
 func intPtr(v int) *int { return &v }
+
+func TestWrite_OwnerOnlyPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not enforced on Windows")
+	}
+	r := Build([]scenarios.Result{{Name: "ok", Passed: true}})
+
+	t.Run("new file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "report.json")
+		if err := Write(path, r); err != nil {
+			t.Fatal(err)
+		}
+		assertMode(t, path, 0o600)
+	})
+
+	t.Run("existing world-readable file is tightened", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "report.json")
+		// Longer than the new report, so incomplete truncation would show.
+		if err := os.WriteFile(path, []byte(strings.Repeat("stale ", 500)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o644); err != nil { // defeat umask
+			t.Fatal(err)
+		}
+
+		if err := Write(path, r); err != nil {
+			t.Fatal(err)
+		}
+		assertMode(t, path, 0o600)
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got Report
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("old contents were not fully truncated: %v\n%s", err, data)
+		}
+	})
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("mode = %#o, want %#o", got, want)
+	}
+}

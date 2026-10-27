@@ -285,3 +285,48 @@ func TestLoad_Empty(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_BaseURLPath(t *testing.T) {
+	withBase := func(base string) string {
+		return strings.Replace(validConfig, "base_url: http://127.0.0.1:8080", "base_url: "+base, 1)
+	}
+
+	for _, ok := range []string{"http://127.0.0.1:8080", "http://127.0.0.1:8080/", "https://localhost"} {
+		t.Run("accepts "+ok, func(t *testing.T) {
+			if _, err := Load(writeTemp(t, withBase(ok))); err != nil {
+				t.Fatalf("base_url %q should be accepted: %v", ok, err)
+			}
+		})
+	}
+
+	for _, bad := range []string{
+		"http://127.0.0.1:8080/api/v1",
+		"http://127.0.0.1:8080/api/v1/",
+		"http://127.0.0.1:8080/api",
+		"http://127.0.0.1:8080//",
+	} {
+		t.Run("rejects "+bad, func(t *testing.T) {
+			_, err := Load(writeTemp(t, withBase(bad)))
+			if err == nil {
+				t.Fatalf("base_url %q must be rejected: its path would be silently dropped", bad)
+			}
+			for _, want := range []string{"base_url path", "not supported", "http://127.0.0.1:8080", "put the prefix in each request path"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestLoad_PrefixInRequestPathIsAllowed(t *testing.T) {
+	// The supported way to target a prefixed API.
+	cfg := strings.Replace(validConfig, "      path: /orders", "      path: /api/v1/orders", 1)
+	got, err := Load(writeTemp(t, cfg))
+	if err != nil {
+		t.Fatalf("a prefix in request.path should be accepted: %v", err)
+	}
+	if got.Scenarios[0].Request.Path != "/api/v1/orders" {
+		t.Fatalf("path = %q", got.Scenarios[0].Request.Path)
+	}
+}

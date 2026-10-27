@@ -93,10 +93,30 @@ func Build(results []scenarios.Result) Report {
 	return r
 }
 
+// reportFileMode keeps reports owner-only: they describe target hosts,
+// paths and failures, even though secrets are redacted.
+const reportFileMode = 0o600
+
+// Write saves r as indented JSON with reportFileMode. An existing file is
+// truncated and tightened to reportFileMode too, since os.WriteFile alone
+// only applies the mode when it creates the file.
 func Write(path string, r Report) error {
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, reportFileMode)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(reportFileMode); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }

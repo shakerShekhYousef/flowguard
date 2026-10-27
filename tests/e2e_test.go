@@ -276,6 +276,22 @@ scenarios:
 		}
 	})
 
+	t.Run("base_url path prefix cannot produce a false pass", func(t *testing.T) {
+		// The safe mock serves /orders at the root. If /api/v1 were silently
+		// dropped, this would PASS (exit 0) while testing the wrong endpoint.
+		cfg := writeConfig(t, t.TempDir(), startMock(t, mock, true)+"/api/v1")
+		out, err := exec.Command(flowguard, "test", "--config", cfg).CombinedOutput()
+		if got := exitCode(err); got != 2 {
+			t.Fatalf("exit code = %d, want 2\n%s", got, out)
+		}
+		if !strings.Contains(string(out), `base_url path "/api/v1" is not supported`) {
+			t.Fatalf("missing actionable error:\n%s", out)
+		}
+		if strings.Contains(string(out), "[PASS]") {
+			t.Fatalf("no scenario may run with a rejected base_url:\n%s", out)
+		}
+	})
+
 	t.Run("missing config flag is a runtime error", func(t *testing.T) {
 		out, err := exec.Command(flowguard, "test").CombinedOutput()
 		if got := exitCode(err); got != 2 {
