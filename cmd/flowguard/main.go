@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/shakerShekhYousef/flowguard/internal/config"
@@ -17,7 +18,18 @@ import (
 
 const defaultTimeout = 10 * time.Second
 
-const version = "0.1.0-dev"
+// version comes from the build info the Go toolchain stamps into the
+// binary: "v0.1.1" for `go install …@v0.1.1`, or a VCS-derived pseudo-version
+// for local builds in a git checkout. It is never hand-edited, so it cannot
+// drift from the release tag.
+var version = versionFromBuildInfo(debug.ReadBuildInfo())
+
+func versionFromBuildInfo(info *debug.BuildInfo, ok bool) string {
+	if !ok || info == nil || info.Main.Version == "" || info.Main.Version == "(devel)" {
+		return "dev"
+	}
+	return info.Main.Version
+}
 
 // Exit codes per FR-07: 0 = pass, 1 = assertion failure, 2 = config/runtime error.
 const (
@@ -75,7 +87,7 @@ func runTest(args []string) int {
 	client := runner.New(cfg.Target.AllowedHosts, defaultTimeout)
 	ctx := context.Background()
 
-	fmt.Println("FlowGuard v" + version)
+	fmt.Println("FlowGuard " + version)
 
 	var results []scenarios.Result
 	runtimeErr := false
