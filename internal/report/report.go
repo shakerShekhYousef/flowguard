@@ -1,10 +1,9 @@
 // Package report builds and writes the machine-readable run report (FR-06).
 //
-// Steps only record status/timing/error today, not raw request or response
-// bodies, so there is nothing sensitive to redact yet. If a future version
-// adds body/header capture for richer reproduction evidence, it must redact
-// fields matching names like authorization/token/secret/password/api-key
-// before they reach this package.
+// Steps record status, timing and error only — never request/response bodies
+// or headers. Every free-text field (errors, assertion reasons) passes
+// through redact.Text before it is stored, so URLs carry no userinfo or
+// query values and credential-like name/value pairs are masked.
 package report
 
 import (
@@ -12,7 +11,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/shakeryoussef/flowguard/internal/scenarios"
+	"github.com/shakerShekhYousef/flowguard/internal/redact"
+	"github.com/shakerShekhYousef/flowguard/internal/scenarios"
 )
 
 type Report struct {
@@ -42,6 +42,14 @@ type AssertionReport struct {
 	Actual   any    `json:"actual"`
 	Passed   bool   `json:"passed"`
 	Reason   string `json:"reason,omitempty"`
+	// FailedRequests is present only when a per-request rule failed.
+	FailedRequests []RequestFailureReport `json:"failed_requests,omitempty"`
+}
+
+type RequestFailureReport struct {
+	Index    int `json:"index"`
+	Expected int `json:"expected"`
+	Actual   int `json:"actual"`
 }
 
 func Build(results []scenarios.Result) Report {
@@ -54,31 +62,29 @@ func Build(results []scenarios.Result) Report {
 		}
 
 		sRep := ScenarioReport{Name: sr.Name, Passed: scenarioPassed}
-		if sr.Err != nil {
-			sRep.Error = sr.Err.Error()
-		}
+		sRep.Error = redact.Error(sr.Err)
 
 		for _, step := range sr.Steps {
-			stepErr := ""
-			if step.Err != nil {
-				stepErr = step.Err.Error()
-			}
 			sRep.Steps = append(sRep.Steps, StepReport{
 				Index:      step.Index,
 				Status:     step.Status,
 				DurationMS: step.Duration.Milliseconds(),
-				Error:      stepErr,
+				Error:      redact.Error(step.Err),
 			})
 		}
 
 		for _, a := range sr.Assertions {
-			sRep.Assertions = append(sRep.Assertions, AssertionReport{
+			aRep := AssertionReport{
 				Rule:     a.Rule,
 				Expected: a.Expected,
 				Actual:   a.Actual,
 				Passed:   a.Passed,
-				Reason:   a.Reason,
-			})
+				Reason:   redact.Text(a.Reason),
+			}
+			for _, f := range a.FailedRequests {
+				aRep.FailedRequests = append(aRep.FailedRequests, RequestFailureReport(f))
+			}
+			sRep.Assertions = append(sRep.Assertions, aRep)
 		}
 
 		r.Scenarios = append(r.Scenarios, sRep)

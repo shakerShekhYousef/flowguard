@@ -6,16 +6,13 @@ package scenarios
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
-	"github.com/shakeryoussef/flowguard/internal/assertions"
-	"github.com/shakeryoussef/flowguard/internal/config"
-	"github.com/shakeryoussef/flowguard/internal/runner"
+	"github.com/shakerShekhYousef/flowguard/internal/assertions"
+	"github.com/shakerShekhYousef/flowguard/internal/config"
+	"github.com/shakerShekhYousef/flowguard/internal/runner"
 )
-
-// EffectCountHeader names the request header whose value is used as the key
-// when querying a target's business-effect test endpoint.
-const EffectCountHeader = "Idempotency-Key"
 
 type StepReport struct {
 	Index    int
@@ -44,7 +41,12 @@ type Result struct {
 func RunIdempotency(ctx context.Context, client *runner.Client, baseURL string, sc config.Scenario) Result {
 	result := Result{Name: sc.Name}
 
-	var lastStatus int
+	if err := runSetup(ctx, client, baseURL, sc.Setup); err != nil {
+		result.Err = err
+		return result
+	}
+
+	var statuses []int
 	for i := 0; i < sc.Repeat; i++ {
 		sr := client.Do(ctx, baseURL, sc.Request)
 		result.Steps = append(result.Steps, StepReport{Index: i, Status: sr.Status, Duration: sr.Duration, Err: sr.Err})
@@ -52,10 +54,10 @@ func RunIdempotency(ctx context.Context, client *runner.Client, baseURL string, 
 			result.Err = fmt.Errorf("step %d: %w", i, sr.Err)
 			return result
 		}
-		lastStatus = sr.Status
+		statuses = append(statuses, sr.Status)
 	}
 
-	key := sc.Request.Headers[EffectCountHeader]
+	key := sc.Request.Header(config.IdempotencyKeyHeader)
 	count, err := queryBusinessEffectCount(ctx, client, baseURL, key)
 	if err != nil {
 		result.Err = fmt.Errorf("querying business effect count: %w", err)
@@ -63,7 +65,7 @@ func RunIdempotency(ctx context.Context, client *runner.Client, baseURL string, 
 	}
 
 	rule := assertions.Rule{Status: sc.Assert.Status, BusinessEffectCount: sc.Assert.BusinessEffectCount}
-	observed := assertions.Observed{LastStatus: lastStatus, BusinessEffectCount: count}
+	observed := assertions.Observed{Statuses: statuses, BusinessEffectCount: count}
 	result.Assertions = assertions.Evaluate(rule, observed)
 	result.Passed = assertions.AllPassed(result.Assertions)
 
@@ -71,12 +73,17 @@ func RunIdempotency(ctx context.Context, client *runner.Client, baseURL string, 
 }
 
 func queryBusinessEffectCount(ctx context.Context, client *runner.Client, baseURL, key string) (int, error) {
-	u := baseURL + "/_test/business-effect-count?key=" + key
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return 0, fmt.Errorf("parsing base url: %w", err)
+	}
+	u := base.ResolveReference(&url.URL{Path: "/_test/business-effect-count"})
+	u.RawQuery = url.Values{"key": {key}}.Encode()
 
 	var out struct {
 		BusinessEffectCount int `json:"business_effect_count"`
 	}
-	if err := client.GetJSON(ctx, u, &out); err != nil {
+	if err := client.GetJSON(ctx, u.String(), &out); err != nil {
 		return 0, err
 	}
 	return out.BusinessEffectCount, nil

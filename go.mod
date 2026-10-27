@@ -1,4 +1,4 @@
-module github.com/shakeryoussef/flowguard
+module github.com/shakerShekhYousef/flowguard
 
 go 1.25.3
 

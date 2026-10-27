@@ -7,6 +7,11 @@ target:
 scenarios:
   - name: charge-once
     kind: idempotency
+    # Reset the local mock so every run starts from zero effects. Only point
+    # setup at endpoints you own in a disposable test environment.
+    setup:
+      - method: POST
+        path: /_test/reset
     request:
       method: POST
       path: /orders

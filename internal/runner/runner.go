@@ -1,11 +1,20 @@
 // Package runner executes HTTP steps against an allow-listed target,
 // enforcing timeouts and recording status, body and latency (FR-02).
+//
+// Target policy: every URL the client contacts — the initial request and
+// each redirect hop — must use http or https and have a hostname listed in
+// AllowedHosts. This is hostname allow-listing, not network-level isolation:
+// it does not restrict what IP addresses an allowed hostname resolves to, so
+// it does not by itself prevent SSRF via DNS (an allowed name pointing at an
+// internal address, or DNS rebinding). Run FlowGuard where its network
+// access is already limited to the intended targets.
 package runner
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,10 +22,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shakeryoussef/flowguard/internal/config"
+	"github.com/shakerShekhYousef/flowguard/internal/config"
+	"github.com/shakerShekhYousef/flowguard/internal/redact"
 )
 
 const maxBodyBytes = 1 << 20 // 1 MiB; bound response reads defensively.
+
+// maxRedirects matches net/http's default limit, which a custom
+// CheckRedirect replaces.
+const maxRedirects = 10
+
+// ErrDisallowedTarget is returned (wrapped) when a request or redirect would
+// leave the target policy: a non-http(s) scheme or a host outside
+// AllowedHosts.
+var ErrDisallowedTarget = errors.New("target not allowed")
 
 type StepResult struct {
 	Method   string
@@ -27,8 +46,8 @@ type StepResult struct {
 	Err      error
 }
 
-// Client sends requests only to hosts present in AllowedHosts (fail closed),
-// matching the target safety policy.
+// Client sends requests only to http(s) URLs whose host is present in
+// AllowedHosts (fail closed), including every redirect it follows.
 type Client struct {
 	HTTPClient   *http.Client
 	AllowedHosts map[string]bool
@@ -54,8 +73,8 @@ func (c *Client) Do(ctx context.Context, baseURL string, req config.Request) Ste
 		return StepResult{Method: req.Method, Err: fmt.Errorf("building request url: %w", err)}
 	}
 
-	if !c.AllowedHosts[strings.ToLower(full.Hostname())] {
-		return StepResult{Method: req.Method, URL: full.String(), Err: fmt.Errorf("host %q is not in allowed_hosts", full.Hostname())}
+	if err := c.checkURL(full); err != nil {
+		return StepResult{Method: req.Method, URL: full.String(), Err: err}
 	}
 
 	var body io.Reader
@@ -79,7 +98,7 @@ func (c *Client) Do(ctx context.Context, baseURL string, req config.Request) Ste
 	}
 
 	start := time.Now()
-	resp, err := c.HTTPClient.Do(httpReq)
+	resp, err := c.send(httpReq)
 	duration := time.Since(start)
 	if err != nil {
 		return StepResult{Method: req.Method, URL: full.String(), Duration: duration, Err: err}
@@ -107,8 +126,8 @@ func (c *Client) GetJSON(ctx context.Context, rawURL string, out any) error {
 	if err != nil {
 		return fmt.Errorf("parsing url: %w", err)
 	}
-	if !c.AllowedHosts[strings.ToLower(u.Hostname())] {
-		return fmt.Errorf("host %q is not in allowed_hosts", u.Hostname())
+	if err := c.checkURL(u); err != nil {
+		return err
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -116,7 +135,7 @@ func (c *Client) GetJSON(ctx context.Context, rawURL string, out any) error {
 		return fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := c.HTTPClient.Do(httpReq)
+	resp, err := c.send(httpReq)
 	if err != nil {
 		return err
 	}
@@ -127,9 +146,56 @@ func (c *Client) GetJSON(ctx context.Context, rawURL string, out any) error {
 		return fmt.Errorf("reading response body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %d from %s: %s", resp.StatusCode, u.String(), string(body))
+		// The body may hold sensitive data; report only its size.
+		return fmt.Errorf("unexpected status %d from %s (%d-byte body not shown)", resp.StatusCode, redact.URL(u.String()), len(body))
 	}
-	return json.Unmarshal(body, out)
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("decoding response from %s: %w", redact.URL(u.String()), err)
+	}
+	return nil
+}
+
+// checkURL enforces the target policy on a single URL.
+func (c *Client) checkURL(u *url.URL) error {
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%w: scheme %q is not http or https", ErrDisallowedTarget, u.Scheme)
+	}
+	if !c.AllowedHosts[strings.ToLower(u.Hostname())] {
+		return fmt.Errorf("%w: host %q is not in allowed_hosts", ErrDisallowedTarget, u.Hostname())
+	}
+	return nil
+}
+
+// send executes req with the target policy applied to every redirect. The
+// policy is attached per request on a shallow copy, so it holds even if
+// HTTPClient was replaced or built without it.
+func (c *Client) send(req *http.Request) (*http.Response, error) {
+	hc := http.Client{}
+	if c.HTTPClient != nil {
+		hc = *c.HTTPClient
+	}
+	hc.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if len(via) >= maxRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxRedirects)
+		}
+		if err := c.checkURL(next.URL); err != nil {
+			return fmt.Errorf("redirect to %s: %w", redact.URL(next.URL.String()), err)
+		}
+		return nil
+	}
+	resp, err := hc.Do(req)
+	return resp, redactURLError(err)
+}
+
+// redactURLError strips credentials and query values from the URL that
+// net/http embeds in its errors (it hides only the password). The error
+// chain is preserved for errors.Is/As.
+func redactURLError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		ue.URL = redact.URL(ue.URL)
+	}
+	return err
 }
 
 func buildURL(baseURL, path string) (*url.URL, error) {

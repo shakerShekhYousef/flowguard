@@ -2,9 +2,14 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
+	"reflect"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -22,8 +27,12 @@ type Target struct {
 }
 
 type Scenario struct {
-	Name    string     `yaml:"name"`
-	Kind    string     `yaml:"kind"`
+	Name string `yaml:"name"`
+	Kind string `yaml:"kind"`
+	// Setup requests run, in order, before the scenario itself to put the
+	// target in a known state (e.g. a test-only reset endpoint). Optional;
+	// FlowGuard never resets anything that is not declared here.
+	Setup   []Request  `yaml:"setup"`
 	Request Request    `yaml:"request"`
 	Repeat  int        `yaml:"repeat"`
 	Assert  AssertRule `yaml:"assert"`
@@ -35,6 +44,21 @@ type Request struct {
 	Headers map[string]string `yaml:"headers"`
 	JSON    map[string]any    `yaml:"json"`
 }
+
+// Header returns the value of the named request header, matching the name
+// case-insensitively as HTTP does.
+func (r Request) Header(name string) string {
+	for k, v := range r.Headers {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
+}
+
+// IdempotencyKeyHeader is the request header an idempotency scenario must
+// set; its value keys the business-effect lookup.
+const IdempotencyKeyHeader = "Idempotency-Key"
 
 type AssertRule struct {
 	Status              *int `yaml:"status"`
@@ -55,8 +79,8 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config %q: %w", path, err)
 	}
 
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	cfg, err := decodeStrict(data)
+	if err != nil {
 		return nil, fmt.Errorf("parsing config %q: %w", path, err)
 	}
 
@@ -64,7 +88,64 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config %q: %w", path, err)
 	}
 
+	return cfg, nil
+}
+
+// decodeStrict parses data, rejecting unknown fields at every level so a
+// typo (e.g. business_effect_cnt) fails loudly instead of silently
+// dropping an assertion or setup step.
+func decodeStrict(data []byte) (*Config, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+
+	var cfg Config
+	if err := dec.Decode(&cfg); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("config is empty")
+		}
+		return nil, explainUnknownFields(err)
+	}
 	return &cfg, nil
+}
+
+// yamlSections maps config types to where they appear in flowguard.yaml.
+var yamlSections = map[string]reflect.Type{
+	"top level":           reflect.TypeOf(Config{}),
+	"target":              reflect.TypeOf(Target{}),
+	"scenario":            reflect.TypeOf(Scenario{}),
+	"request/setup entry": reflect.TypeOf(Request{}),
+	"assert":              reflect.TypeOf(AssertRule{}),
+}
+
+var unknownFieldPattern = regexp.MustCompile(`field (\S+) not found in type (\S+)`)
+
+// explainUnknownFields rewrites yaml.v3's "field X not found in type
+// config.T" into the YAML section name plus the fields that are valid there.
+func explainUnknownFields(err error) error {
+	msg := unknownFieldPattern.ReplaceAllStringFunc(err.Error(), func(m string) string {
+		parts := unknownFieldPattern.FindStringSubmatch(m)
+		field, typeName := parts[1], parts[2]
+		for section, t := range yamlSections {
+			if t.String() == typeName {
+				return fmt.Sprintf("unknown field %q in %s (valid fields: %s)", field, section, strings.Join(yamlFields(t), ", "))
+			}
+		}
+		return m
+	})
+	if msg == err.Error() {
+		return err
+	}
+	return errors.New(msg)
+}
+
+func yamlFields(t reflect.Type) []string {
+	var names []string
+	for i := 0; i < t.NumField(); i++ {
+		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("yaml"), ","); name != "" && name != "-" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 func (c *Config) validate() error {
@@ -102,6 +183,9 @@ func (t *Target) validate() error {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("base_url %q is not a valid absolute URL", t.BaseURL)
 	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("base_url scheme %q is not supported (use http or https)", u.Scheme)
+	}
 	if len(t.AllowedHosts) == 0 {
 		return fmt.Errorf("allowed_hosts must list at least one host (fail closed by default)")
 	}
@@ -126,11 +210,22 @@ func (s *Scenario) validate() error {
 	if !supportedKinds[s.Kind] {
 		return fmt.Errorf("kind %q is not supported (supported: idempotency)", s.Kind)
 	}
+	for i, r := range s.Setup {
+		if r.Method == "" {
+			return fmt.Errorf("setup[%d].method is required", i)
+		}
+		if r.Path == "" {
+			return fmt.Errorf("setup[%d].path is required", i)
+		}
+	}
 	if s.Request.Method == "" {
 		return fmt.Errorf("request.method is required")
 	}
 	if s.Request.Path == "" {
 		return fmt.Errorf("request.path is required")
+	}
+	if s.Kind == "idempotency" && s.Request.Header(IdempotencyKeyHeader) == "" {
+		return fmt.Errorf("request.headers.%s is required for idempotency scenarios", IdempotencyKeyHeader)
 	}
 	if s.Repeat < 1 {
 		return fmt.Errorf("repeat must be >= 1, got %d", s.Repeat)

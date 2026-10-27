@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
-	"github.com/shakeryoussef/flowguard/internal/config"
-	"github.com/shakeryoussef/flowguard/internal/report"
-	"github.com/shakeryoussef/flowguard/internal/runner"
-	"github.com/shakeryoussef/flowguard/internal/scenarios"
+	"github.com/shakerShekhYousef/flowguard/internal/config"
+	"github.com/shakerShekhYousef/flowguard/internal/redact"
+	"github.com/shakerShekhYousef/flowguard/internal/report"
+	"github.com/shakerShekhYousef/flowguard/internal/runner"
+	"github.com/shakerShekhYousef/flowguard/internal/scenarios"
 )
 
 const defaultTimeout = 10 * time.Second
@@ -50,16 +53,22 @@ func run(args []string) int {
 }
 
 func runTest(args []string) int {
-	configPath := parseFlag(args, "--config")
-	if configPath == "" {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", "", "path to flowguard.yaml")
+	reportPath := fs.String("report", "", "path to write the JSON report")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return exitRuntimeError
+	}
+	if *configPath == "" {
 		fmt.Fprintln(os.Stderr, "error: --config <path> is required")
 		return exitRuntimeError
 	}
-	reportPath := parseFlag(args, "--report")
 
-	cfg, err := config.Load(configPath)
+	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %s\n", redact.Error(err))
 		return exitRuntimeError
 	}
 
@@ -86,7 +95,7 @@ func runTest(args []string) int {
 		results = append(results, result)
 
 		if result.Err != nil {
-			fmt.Printf("  [ERROR] %v\n", result.Err)
+			fmt.Printf("  [ERROR] %s\n", redact.Error(result.Err))
 			runtimeErr = true
 			continue
 		}
@@ -94,18 +103,18 @@ func runTest(args []string) int {
 			if a.Passed {
 				fmt.Printf("  [PASS] %s\n", a.Rule)
 			} else {
-				fmt.Printf("  [FAIL] %s\n", a.Reason)
+				fmt.Printf("  [FAIL] %s\n", redact.Text(a.Reason))
 				assertionFail = true
 			}
 		}
 	}
 
-	if reportPath != "" {
-		if err := report.Write(reportPath, report.Build(results)); err != nil {
-			fmt.Fprintf(os.Stderr, "error: writing report: %v\n", err)
+	if *reportPath != "" {
+		if err := report.Write(*reportPath, report.Build(results)); err != nil {
+			fmt.Fprintf(os.Stderr, "error: writing report: %s\n", redact.Error(err))
 			return exitRuntimeError
 		}
-		fmt.Printf("\nreport written to %s\n", reportPath)
+		fmt.Printf("\nreport written to %s\n", *reportPath)
 	}
 
 	switch {
@@ -116,15 +125,6 @@ func runTest(args []string) int {
 	default:
 		return exitOK
 	}
-}
-
-func parseFlag(args []string, name string) string {
-	for i, a := range args {
-		if a == name && i+1 < len(args) {
-			return args[i+1]
-		}
-	}
-	return ""
 }
 
 func printUsage() {
