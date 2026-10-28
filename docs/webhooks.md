@@ -1,10 +1,9 @@
 # Webhook testing
 
-> **Status:** webhook scenarios are FlowGuard v0.2.0 (Milestone 1). Until
-> the `v0.2.0` tag is published, the latest release is v0.1.1, which has no
-> webhook support: build from a checkout of `main` to use them. Automatic
-> retries, delivery delays, timeout simulation, HMAC signing and state
-> polling are planned for v0.3.0 (Milestone 2).
+> **Status:** released in FlowGuard v0.2.0 (Milestone 1). v0.1.1 and
+> earlier have no webhook support. Automatic retries, delivery delays,
+> timeout simulation, HMAC signing and state polling are planned for v0.3.0
+> (Milestone 2).
 
 Webhook providers (payment processors, shipping carriers, identity
 providers) deliver events at least once. Networks fail, providers retry,

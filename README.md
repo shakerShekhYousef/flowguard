@@ -17,13 +17,8 @@ Early stage. Expect breaking changes until v1.
 | ------- | ------ |
 | `idempotency` scenarios: replay a request, assert status and business-effect count | Released in v0.1.0 |
 | JSON reports, CI exit codes, host allow-list, redaction | Released in v0.1.0 |
-| `webhook` scenarios: sequential, duplicate and manually reordered deliveries, outcome and status expectations, exact final-state assertions | v0.2.0 (Milestone 1), on `main` |
+| `webhook` scenarios: sequential, duplicate and manually reordered deliveries, outcome and status expectations, exact final-state assertions | Released in v0.2.0 (Milestone 1) |
 | Automatic retries, delivery delays, timeout simulation, HMAC signing, state polling | Planned for v0.3.0 (Milestone 2); not implemented |
-
-> **Release status:** v0.2.0 is prepared on `main`. Until the `v0.2.0` tag
-> is published, the latest release is v0.1.1, which has no webhook support,
-> and `go install …@latest` installs it. To use webhook scenarios before
-> then, build from a checkout of `main`.
 
 ## Documentation
 
@@ -98,7 +93,7 @@ flowguard version
 The binary lands in `$(go env GOBIN)`, or `$(go env GOPATH)/bin` if `GOBIN`
 is unset; make sure that directory is on your `PATH`. The module path is
 case-sensitive: use `shakerShekhYousef` exactly as written. To pin a release,
-replace `@latest` with a tag such as `@v0.1.0`.
+replace `@latest` with a tag such as `@v0.2.0`.
 
 Or build from a checkout:
 
@@ -128,10 +123,9 @@ instead and the run passes (exit code 0).
 
 ## Webhook quickstart
 
-> Webhook scenarios need v0.2.0 or a build of `main`. A v0.1.1 binary
-> rejects the webhook example with `unknown field` config errors (exit
-> code 2). Until the `v0.2.0` tag is published, build `./flowguard` from a
-> checkout as shown above.
+> Webhook scenarios need v0.2.0 or later. A v0.1.1 binary rejects the
+> webhook example with `unknown field` config errors (exit code 2); check
+> with `flowguard version` and reinstall as shown above if needed.
 
 Payment providers retry webhooks, so receivers see the same event more than
 once. `flowguard.webhooks.example.yaml` plays the provider: it delivers one
