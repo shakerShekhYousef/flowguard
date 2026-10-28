@@ -201,13 +201,13 @@ func TestLoad_RejectsUnknownFields(t *testing.T) {
 			name:    "misspelled field inside setup entry",
 			from:    "    request:\n",
 			to:      "    setup:\n      - {methd: POST, path: /_test/reset}\n    request:\n",
-			wantErr: []string{`unknown field "methd" in request/setup entry`, "method"},
+			wantErr: []string{`unknown field "methd" in request entry`, "method"},
 		},
 		{
 			name:    "unknown nested request field",
 			from:    "      path: /orders\n",
 			to:      "      path: /orders\n      body: {amount: 100}\n",
-			wantErr: []string{`unknown field "body" in request/setup entry`, "json"},
+			wantErr: []string{`unknown field "body" in request entry`, "json"},
 		},
 		{
 			name:    "unknown target field",

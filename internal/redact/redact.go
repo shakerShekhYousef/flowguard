@@ -42,15 +42,20 @@ func URL(raw string) string {
 	return c.String()
 }
 
+// sensitiveWords are name fragments that mark a value as secret.
+const sensitiveWords = `authorization|token|secret|password|passwd|api[_\-]?key|cookie|session|signature|credential`
+
 var (
 	urlPattern = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.\-]*://[^\s"'<>]+`)
 
 	// name=value, name: value, "name":"value" where name looks sensitive.
 	// An auth scheme prefix ("Bearer x") is consumed with the value.
 	sensitivePairPattern = regexp.MustCompile(
-		`(?i)([\w\-]*(?:authorization|token|secret|password|passwd|api[_\-]?key|cookie|session|signature|credential)[\w\-]*)` +
+		`(?i)([\w\-]*(?:` + sensitiveWords + `)[\w\-]*)` +
 			`("?\s*[=:]\s*"?)` +
 			`(?:(?:bearer|basic|token)\s+)?[^\s"&,;]+`)
+
+	sensitiveNamePattern = regexp.MustCompile(`(?i)` + sensitiveWords)
 
 	authSchemePattern = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9\-._~+/]+=*`)
 )
@@ -62,6 +67,12 @@ func Text(s string) string {
 	s = sensitivePairPattern.ReplaceAllString(s, "${1}${2}"+Placeholder)
 	s = authSchemePattern.ReplaceAllString(s, "${1} "+Placeholder)
 	return s
+}
+
+// SensitiveName reports whether a field or header name (e.g. api_key,
+// X-Webhook-Signature, refresh_token) suggests its value is secret.
+func SensitiveName(name string) bool {
+	return sensitiveNamePattern.MatchString(name)
 }
 
 // Error returns err's message passed through Text, or "" for nil.

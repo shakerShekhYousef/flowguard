@@ -60,6 +60,31 @@ func Evaluate(rule Rule, observed Observed) []Result {
 	return results
 }
 
+// EvaluateDelivery checks one webhook delivery against its expectation.
+// The outcome rule is always evaluated; status only when one is expected.
+func EvaluateDelivery(index int, expectedOutcome string, expectedStatus *int, outcome string, status int) []Result {
+	name := fmt.Sprintf("delivery[%d]", index)
+
+	passed := outcome == expectedOutcome
+	r := Result{Rule: name + ".outcome", Expected: expectedOutcome, Actual: outcome, Passed: passed}
+	if !passed {
+		r.Reason = fmt.Sprintf("%s.outcome: expected %s, got %s (status %d)", name, expectedOutcome, outcome, status)
+	}
+	results := []Result{r}
+
+	if expectedStatus != nil {
+		passed := status == *expectedStatus
+		results = append(results, Result{
+			Rule:     name + ".status",
+			Expected: *expectedStatus,
+			Actual:   status,
+			Passed:   passed,
+			Reason:   reasonIfFailed(passed, name+".status", *expectedStatus, status),
+		})
+	}
+	return results
+}
+
 // evaluateStatus requires every replayed request to return expected. A
 // retry that fails before a later one succeeds is still a failure: clients
 // see that error response.

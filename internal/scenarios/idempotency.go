@@ -19,6 +19,10 @@ type StepReport struct {
 	Status   int
 	Duration time.Duration
 	Err      error
+
+	// Webhook deliveries only; empty for idempotency replays.
+	EventID string
+	Outcome string
 }
 
 type Result struct {

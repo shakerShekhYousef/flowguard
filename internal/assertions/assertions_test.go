@@ -113,3 +113,30 @@ func TestEvaluate_StatusFailureDoesNotHideEffectCount(t *testing.T) {
 		t.Fatalf("business_effect_count is not per-request: %+v", results[1])
 	}
 }
+
+func TestEvaluateDelivery(t *testing.T) {
+	t.Run("outcome only", func(t *testing.T) {
+		r := EvaluateDelivery(2, "delivered", nil, "delivered", 204)
+		if len(r) != 1 || r[0].Rule != "delivery[2].outcome" || !r[0].Passed || r[0].Reason != "" {
+			t.Fatalf("got %+v", r)
+		}
+	})
+	t.Run("outcome mismatch names status", func(t *testing.T) {
+		r := EvaluateDelivery(0, "delivered", nil, "rejected", 500)
+		if r[0].Passed || r[0].Reason != "delivery[0].outcome: expected delivered, got rejected (status 500)" {
+			t.Fatalf("got %+v", r)
+		}
+		if r[0].Expected != "delivered" || r[0].Actual != "rejected" {
+			t.Fatalf("expected/actual = %v/%v", r[0].Expected, r[0].Actual)
+		}
+	})
+	t.Run("status checked when expected", func(t *testing.T) {
+		r := EvaluateDelivery(1, "delivered", intPtr(202), "delivered", 200)
+		if len(r) != 2 || !r[0].Passed || r[1].Passed || r[1].Rule != "delivery[1].status" || r[1].Reason != "delivery[1].status: expected 202, got 200" {
+			t.Fatalf("got %+v", r)
+		}
+		if r[1].Expected != 202 || r[1].Actual != 200 {
+			t.Fatalf("status expected/actual must be ints: %v/%v", r[1].Expected, r[1].Actual)
+		}
+	})
+}

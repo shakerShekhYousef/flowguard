@@ -100,17 +100,21 @@ func runTest(args []string) int {
 		switch sc.Kind {
 		case "idempotency":
 			result = scenarios.RunIdempotency(ctx, client, cfg.Target.BaseURL, sc)
+		case "webhook":
+			result = scenarios.RunWebhook(ctx, client, cfg.Target.BaseURL, sc)
 		default:
 			fmt.Fprintf(os.Stderr, "error: scenario %q has unsupported kind %q\n", sc.Name, sc.Kind)
 			return exitRuntimeError
 		}
 		results = append(results, result)
 
-		if result.Err != nil {
-			fmt.Printf("  [ERROR] %s\n", redact.Error(result.Err))
-			runtimeErr = true
-			continue
+		for _, step := range result.Steps {
+			if step.EventID != "" {
+				fmt.Printf("  %s\n", deliveryLine(step))
+			}
 		}
+		// Assertions come first: a webhook scenario can have delivery
+		// results from before a runtime error stopped it.
 		for _, a := range result.Assertions {
 			if a.Passed {
 				fmt.Printf("  [PASS] %s\n", a.Rule)
@@ -118,6 +122,10 @@ func runTest(args []string) int {
 				fmt.Printf("  [FAIL] %s\n", redact.Text(a.Reason))
 				assertionFail = true
 			}
+		}
+		if result.Err != nil {
+			fmt.Printf("  [ERROR] %s\n", redact.Error(result.Err))
+			runtimeErr = true
 		}
 	}
 
@@ -137,6 +145,15 @@ func runTest(args []string) int {
 	default:
 		return exitOK
 	}
+}
+
+// deliveryLine summarizes one webhook delivery, e.g.
+// "delivery[1] evt_paid_1: 200 delivered".
+func deliveryLine(step scenarios.StepReport) string {
+	if step.Err != nil {
+		return fmt.Sprintf("delivery[%d] %s: not delivered (runtime error)", step.Index, redact.Text(step.EventID))
+	}
+	return fmt.Sprintf("delivery[%d] %s: %d %s", step.Index, redact.Text(step.EventID), step.Status, step.Outcome)
 }
 
 func printUsage() {

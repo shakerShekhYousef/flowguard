@@ -64,33 +64,49 @@ func New(allowedHosts []string, timeout time.Duration) *Client {
 	}
 }
 
-// Do sends req against baseURL+path and reports the outcome. A disallowed
-// host or network error is captured as a failed StepResult rather than a
-// panic, so callers can surface it as a structured failure (FR-02).
+// Do sends req against baseURL+path, encoding req.JSON (if any) as the
+// body, and reports the outcome. A disallowed host or network error is
+// captured as a failed StepResult rather than a panic, so callers can
+// surface it as a structured failure (FR-02).
 func (c *Client) Do(ctx context.Context, baseURL string, req config.Request) StepResult {
-	full, err := buildURL(baseURL, req.Path)
-	if err != nil {
-		return StepResult{Method: req.Method, Err: fmt.Errorf("building request url: %w", err)}
-	}
-
-	if err := c.checkURL(full); err != nil {
-		return StepResult{Method: req.Method, URL: full.String(), Err: err}
-	}
-
-	var body io.Reader
+	var body []byte
 	if req.JSON != nil {
 		encoded, err := json.Marshal(req.JSON)
 		if err != nil {
+			// URL and target-policy errors take precedence, as they always have.
+			full, failed, ok := c.resolve(baseURL, req)
+			if !ok {
+				return failed
+			}
 			return StepResult{Method: req.Method, URL: full.String(), Err: fmt.Errorf("encoding json body: %w", err)}
 		}
-		body = bytes.NewReader(encoded)
+		body = encoded
+	}
+	return c.DoBody(ctx, baseURL, req, body)
+}
+
+// DoBody sends req against baseURL+path with body sent exactly as given:
+// it is never re-encoded, and neither body nor req is modified. req.JSON is
+// ignored. A non-empty body gets Content-Type: application/json unless
+// req.Headers sets Content-Type (matched case-insensitively); a nil or empty
+// body sends no body and no Content-Type. The target policy, redirect
+// checks, timeouts, cancellation and error redaction are the same as Do's.
+func (c *Client) DoBody(ctx context.Context, baseURL string, req config.Request, body []byte) StepResult {
+	full, failed, ok := c.resolve(baseURL, req)
+	if !ok {
+		return failed
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, req.Method, full.String(), body)
+	var reader io.Reader
+	if len(body) > 0 {
+		reader = bytes.NewReader(body)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, req.Method, full.String(), reader)
 	if err != nil {
 		return StepResult{Method: req.Method, URL: full.String(), Err: fmt.Errorf("creating request: %w", err)}
 	}
-	if body != nil {
+	if reader != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
 	for k, v := range req.Headers {
@@ -117,6 +133,19 @@ func (c *Client) Do(ctx context.Context, baseURL string, req config.Request) Ste
 		Body:     respBody,
 		Duration: duration,
 	}
+}
+
+// resolve builds the request URL and applies the target policy. When ok is
+// false, failed is the StepResult to return.
+func (c *Client) resolve(baseURL string, req config.Request) (full *url.URL, failed StepResult, ok bool) {
+	full, err := buildURL(baseURL, req.Path)
+	if err != nil {
+		return nil, StepResult{Method: req.Method, Err: fmt.Errorf("building request url: %w", err)}, false
+	}
+	if err := c.checkURL(full); err != nil {
+		return nil, StepResult{Method: req.Method, URL: full.String(), Err: err}, false
+	}
+	return full, StepResult{}, true
 }
 
 // GetJSON is a small helper for test-state endpoints (e.g. a mock server's

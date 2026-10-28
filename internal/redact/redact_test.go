@@ -102,3 +102,16 @@ func TestError(t *testing.T) {
 		t.Fatalf("Error() = %q", got)
 	}
 }
+
+func TestSensitiveName(t *testing.T) {
+	for _, name := range []string{"password", "api_key", "apiKey", "X-Api-Key", "refresh_token", "client_secret", "Authorization", "session_id", "webhook_signature", "credentials", "Cookie"} {
+		if !SensitiveName(name) {
+			t.Errorf("SensitiveName(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"status", "charges", "customer", "id", "items", "amount", "0"} {
+		if SensitiveName(name) {
+			t.Errorf("SensitiveName(%q) = true, want false", name)
+		}
+	}
+}
