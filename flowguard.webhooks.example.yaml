@@ -1,0 +1,45 @@
+version: 1
+
+# Webhook quickstart: FlowGuard plays the payment provider and delivers the
+# same order.paid event twice, as providers do when they retry. Both
+# deliveries get HTTP 200 from a buggy receiver too; only the order's final
+# state shows whether the customer was charged once.
+#
+# Run against the bundled mock (examples/mock-server): buggy by default,
+# fixed with -safe. FlowGuard simulates the provider's deliveries; it does
+# not test a real provider's retry scheduler.
+
+target:
+  base_url: http://127.0.0.1:8080
+  allowed_hosts: [127.0.0.1, localhost]
+
+scenarios:
+  - name: duplicate-payment
+    kind: webhook
+    # Reset the local mock so every run starts from empty state. Only point
+    # setup at endpoints you own in a disposable test environment.
+    setup:
+      - method: POST
+        path: /_test/reset
+    endpoint:
+      method: POST
+      path: /webhooks
+    events:
+      - id: evt_paid_1
+        json:
+          id: evt_paid_1
+          type: order.paid
+          data: {order_id: ord_1, amount: 100}
+    deliveries:
+      - event: evt_paid_1
+        expect: {outcome: delivered, status: 200}
+      - event: evt_paid_1   # duplicate delivery of the same event id
+        expect: {outcome: delivered, status: 200}
+    observe:
+      request:
+        method: GET
+        path: /_test/orders/ord_1
+    assert:
+      state:
+        status: paid
+        charges: 1

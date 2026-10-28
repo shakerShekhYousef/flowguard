@@ -1,0 +1,101 @@
+{
+  "generated_at": "2026-10-28T08:04:26.593237Z",
+  "passed": false,
+  "scenarios": [
+    {
+      "name": "safe-create-order",
+      "passed": true,
+      "steps": [
+        {
+          "index": 0,
+          "status": 201,
+          "duration_ms": 4
+        },
+        {
+          "index": 1,
+          "status": 201,
+          "duration_ms": 2
+        },
+        {
+          "index": 2,
+          "status": 201,
+          "duration_ms": 1
+        }
+      ],
+      "assertions": [
+        {
+          "rule": "status",
+          "expected": 201,
+          "actual": 201,
+          "passed": true
+        },
+        {
+          "rule": "business_effect_count",
+          "expected": 1,
+          "actual": 1,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "buggy-create-order",
+      "passed": false,
+      "steps": [
+        {
+          "index": 0,
+          "status": 201,
+          "duration_ms": 3
+        },
+        {
+          "index": 1,
+          "status": 500,
+          "duration_ms": 2
+        }
+      ],
+      "assertions": [
+        {
+          "rule": "status",
+          "expected": 201,
+          "actual": 500,
+          "passed": false,
+          "reason": "status: expected 201 for all 2 requests, request[1] got 500",
+          "failed_requests": [
+            {
+              "index": 1,
+              "expected": 201,
+              "actual": 500
+            }
+          ]
+        },
+        {
+          "rule": "business_effect_count",
+          "expected": 1,
+          "actual": 2,
+          "passed": false,
+          "reason": "business_effect_count: expected 1, got 2"
+        }
+      ]
+    },
+    {
+      "name": "unreachable",
+      "passed": false,
+      "error": "step 0: Post \"http://REDACTED@127.0.0.1:1/orders?api_key=REDACTED\": dial tcp 127.0.0.1:1: connect: connection refused",
+      "steps": [
+        {
+          "index": 0,
+          "status": 0,
+          "duration_ms": 7,
+          "error": "Post \"http://REDACTED@127.0.0.1:1/orders?api_key=REDACTED\": dial tcp 127.0.0.1:1: connect: connection refused"
+        }
+      ],
+      "assertions": null
+    },
+    {
+      "name": "setup-fails",
+      "passed": false,
+      "error": "setup[0]: POST /_test/reset returned status 404, want 2xx",
+      "steps": null,
+      "assertions": null
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "generated_at": "2026-10-28T08:05:01.274827Z",
+  "passed": false,
+  "scenarios": [
+    {
+      "name": "duplicate-delivery",
+      "passed": false,
+      "steps": [
+        {
+          "index": 0,
+          "event_id": "evt_paid_1",
+          "status": 200,
+          "outcome": "delivered",
+          "duration_ms": 5
+        },
+        {
+          "index": 1,
+          "event_id": "evt_paid_1",
+          "status": 200,
+          "outcome": "delivered",
+          "duration_ms": 3
+        }
+      ],
+      "assertions": [
+        {
+          "rule": "delivery[0].outcome",
+          "expected": "delivered",
+          "actual": "delivered",
+          "passed": true
+        },
+        {
+          "rule": "delivery[1].outcome",
+          "expected": "delivered",
+          "actual": "delivered",
+          "passed": true
+        },
+        {
+          "rule": "delivery[1].status",
+          "expected": 200,
+          "actual": 200,
+          "passed": true
+        },
+        {
+          "rule": "state.charges",
+          "expected": 1,
+          "actual": 2,
+          "passed": false,
+          "reason": "state.charges: expected 1, got 2"
+        },
+        {
+          "rule": "state.status",
+          "expected": "paid",
+          "actual": "paid",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "dropped-delivery",
+      "passed": false,
+      "error": "delivery[1] (event \"evt_drop\"): Post \"http://127.0.0.1:8080/webhooks?token=REDACTED\": EOF",
+      "steps": [
+        {
+          "index": 0,
+          "event_id": "evt_note",
+          "status": 422,
+          "outcome": "rejected",
+          "duration_ms": 2
+        },
+        {
+          "index": 1,
+          "event_id": "evt_drop",
+          "status": 0,
+          "duration_ms": 1,
+          "error": "delivery[1] (event \"evt_drop\"): Post \"http://127.0.0.1:8080/webhooks?token=REDACTED\": EOF"
+        }
+      ],
+      "assertions": [
+        {
+          "rule": "delivery[0].outcome",
+          "expected": "delivered",
+          "actual": "rejected",
+          "passed": false,
+          "reason": "delivery[0].outcome: expected delivered, got rejected (status 422)"
+        }
+      ]
+    }
+  ]
+}

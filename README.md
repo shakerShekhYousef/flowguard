@@ -11,10 +11,23 @@ for *business-logic correctness*, not just response codes.
 
 ## Status
 
-Early stage (v0.1). The `idempotency` scenario works end to end: config
-validation, allow-listed HTTP replay, business-effect assertions, JSON
-reports and exit codes, with unit and end-to-end tests. Webhook-fault
-scenarios are planned for v0.2. Expect breaking changes until v1.
+Early stage. Expect breaking changes until v1.
+
+| Feature | Status |
+| ------- | ------ |
+| `idempotency` scenarios: replay a request, assert status and business-effect count | Released in v0.1.0; latest release v0.1.1 |
+| JSON reports, CI exit codes, host allow-list, redaction | Released in v0.1.0 |
+| `webhook` scenarios: sequential and duplicate deliveries, outcome and status expectations, final-state assertions | **Unreleased** (v0.2 Milestone 1): available when built from `main` |
+| Webhook delays, retries, timeouts, state polling, HMAC signing | Planned (v0.2 Milestone 2) |
+
+## Documentation
+
+- [docs/webhooks.md](docs/webhooks.md): webhook scenarios, configuration,
+  outcomes, state assertions, reports and limitations.
+- [docs/test-state.md](docs/test-state.md): the test-state endpoints
+  FlowGuard reads, the mock server's rules, reset strategies and staging
+  requirements.
+- [CHANGELOG.md](CHANGELOG.md): release history and unreleased changes.
 
 ## How it works
 
@@ -91,17 +104,85 @@ go build -o flowguard ./cmd/flowguard
 ./flowguard version
 ```
 
-## Try it
+## Idempotency quickstart
+
+Run from a checkout, after building `./flowguard` as shown above. The
+commands use a POSIX shell (`&` starts the mock in the background and
+`kill %1` stops it); on Windows, run the mock in a second terminal instead.
 
 ```bash
 go run ./examples/mock-server &        # buggy: retries double-charge
 ./flowguard test --config flowguard.example.yaml
 # [FAIL] business_effect_count: expected 1, got 2   (exit code 1)
+kill %1
 ```
 
 Re-running gives the same result every time, because the example resets the
-mock in `setup`. Restart the mock with `-safe` and the run passes (exit
-code 0).
+mock in `setup`. Start the mock with `go run ./examples/mock-server -safe &`
+instead and the run passes (exit code 0).
+
+## Webhook quickstart
+
+> Webhook scenarios are not in a release yet. Build `./flowguard` from a
+> checkout of `main` as shown above; a binary installed with
+> `go install ...@latest` (v0.1.1) rejects the webhook example with
+> `unknown field` config errors (exit code 2).
+
+Payment providers retry webhooks, so receivers see the same event more than
+once. `flowguard.webhooks.example.yaml` plays the provider: it delivers one
+`order.paid` event twice, then reads the order's state from the receiver.
+The same POSIX shell notes apply as above.
+
+Start the bundled mock receiver (buggy by default) and run the example:
+
+```bash
+go run ./examples/mock-server &        # buggy: a duplicate event charges again
+./flowguard test --config flowguard.webhooks.example.yaml
+```
+
+```
+Running: duplicate-payment
+  delivery[0] evt_paid_1: 200 delivered
+  delivery[1] evt_paid_1: 200 delivered
+  [PASS] delivery[0].outcome
+  [PASS] delivery[0].status
+  [PASS] delivery[1].outcome
+  [PASS] delivery[1].status
+  [FAIL] state.charges: expected 1, got 2
+  [PASS] state.status
+```
+
+The exit code is 1. Stop the mock (`kill %1`), restart it in safe mode and
+run the same command again:
+
+```bash
+go run ./examples/mock-server -safe &  # dedupes events by id
+./flowguard test --config flowguard.webhooks.example.yaml
+```
+
+```
+  ...
+  [PASS] state.charges
+  [PASS] state.status
+```
+
+The exit code is 0. Stop the mock with `kill %1` when you are done.
+
+**Why HTTP 200 is not enough:** the buggy receiver answers both deliveries
+with 200, so every delivery check passes; a monitor watching status codes
+would see nothing wrong. The bug is only visible in business state, the
+customer charged twice, which is why the scenario asserts on
+`GET /_test/orders/ord_1` after the deliveries.
+
+The mock's safe mode follows illustrative rules (dedupe by event id, ignore
+stale `sequence` numbers, treat cancelled as final, charge an order at most
+once). They show the kind of invariant FlowGuard checks; they are not
+universal requirements for payment systems. FlowGuard simulates a webhook
+provider's deliveries; it does not test a real provider's internal retry
+scheduler.
+
+See [docs/webhooks.md](docs/webhooks.md) for the full configuration
+reference and more examples.
 
 ## Development
 
@@ -111,6 +192,10 @@ go test -short ./...   # skip the end-to-end tests that build binaries
 ```
 
 ## Assertions
+
+Idempotency scenarios support these rules. Webhook scenarios use per-delivery
+expectations and `assert.state` instead; see
+[docs/webhooks.md](docs/webhooks.md#delivery-outcomes-and-expectations).
 
 | Rule | Passes when |
 | ---- | ----------- |
@@ -157,13 +242,26 @@ unchanged.
 cmd/flowguard/      CLI entry point
 internal/config/    YAML parsing and validation
 internal/runner/    Allow-listed HTTP execution
-internal/scenarios/ Scenario kinds (idempotency; webhook faults in v0.2)
+internal/scenarios/ Scenario kinds (idempotency, webhook)
 internal/assertions/ Business-effect assertions
 internal/report/    JSON report generation
-examples/mock-server/ Local synthetic API for safe, reproducible demos
+examples/mock-server/ Local synthetic API and webhook receiver for demos
 tests/              End-to-end tests against the built binary
-docs/               Design notes (test-state endpoint contract)
+docs/               User docs (webhooks, test-state endpoints) and design notes
 ```
+
+## Known limitations
+
+- Business effects are read from test-only endpoints that your service must
+  expose in a test environment; see [docs/test-state.md](docs/test-state.md).
+- State is read once, right after the last request or delivery; services
+  that process asynchronously are not supported yet.
+- Webhook deliveries are sent once each, sequentially, without delays,
+  retries or signatures (planned for v0.2 Milestone 2).
+- A query string in `base_url` is ignored rather than rejected.
+- Redaction is pattern-based. It covers common credential formats but cannot
+  recognise every secret, so keep real secrets out of configs and treat
+  reports as internal artifacts.
 
 ## Safety
 

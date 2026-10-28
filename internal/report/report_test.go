@@ -184,3 +184,70 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 		t.Fatalf("mode = %#o, want %#o", got, want)
 	}
 }
+
+func TestBuild_WebhookSteps(t *testing.T) {
+	r := Build([]scenarios.Result{{
+		Name: "wh",
+		Err:  errors.New("delivery[2] (event \"evt_c\"): EOF"),
+		Steps: []scenarios.StepReport{
+			{Index: 0, EventID: "evt_a", Status: 200, Outcome: "delivered"},
+			{Index: 1, EventID: "evt_b", Status: 409, Outcome: "rejected"},
+			{Index: 2, EventID: "evt_c", Err: errors.New("delivery[2] (event \"evt_c\"): EOF")},
+		},
+	}})
+
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Scenarios []struct {
+			Steps []map[string]any `json:"steps"`
+		} `json:"scenarios"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	steps := doc.Scenarios[0].Steps
+
+	for i, want := range []struct{ id, outcome string }{{"evt_a", "delivered"}, {"evt_b", "rejected"}, {"evt_c", ""}} {
+		if steps[i]["index"] != float64(i) || steps[i]["event_id"] != want.id {
+			t.Fatalf("steps[%d] = %v, want index %d event_id %s", i, steps[i], i, want.id)
+		}
+		outcome, present := steps[i]["outcome"]
+		if want.outcome == "" && present {
+			t.Fatalf("a delivery that failed at runtime has no outcome: %v", steps[i])
+		}
+		if want.outcome != "" && outcome != want.outcome {
+			t.Fatalf("steps[%d].outcome = %v, want %s", i, outcome, want.outcome)
+		}
+		if _, hasErr := steps[i]["error"]; hasErr != (i == 2) {
+			t.Fatalf("steps[%d] error presence = %v: %v", i, hasErr, steps[i])
+		}
+	}
+}
+
+func TestBuild_WebhookRedaction(t *testing.T) {
+	r := Build([]scenarios.Result{{
+		Name: "wh",
+		Steps: []scenarios.StepReport{
+			{Index: 0, EventID: "evt token=tok_EVT_SYNTH", Status: 200, Outcome: "delivered"},
+		},
+		Assertions: assertions.EvaluateState(
+			map[string]any{"api_token": "tok_EXPECT_SYNTH", "note": "see https://u:pw_URL_SYNTH@x.test/?k=q_SYNTH"},
+			map[string]any{"api_token": "tok_ACTUAL_SYNTH", "note": "other"}),
+	}})
+
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"tok_EVT_SYNTH", "tok_EXPECT_SYNTH", "tok_ACTUAL_SYNTH", "pw_URL_SYNTH", "q_SYNTH"} {
+		if strings.Contains(string(data), secret) {
+			t.Fatalf("report leaks %q:\n%s", secret, data)
+		}
+	}
+	if !strings.Contains(string(data), `"rule":"state.api_token","expected":"REDACTED","actual":"REDACTED"`) {
+		t.Fatalf("sensitive state path should report REDACTED values:\n%s", data)
+	}
+}

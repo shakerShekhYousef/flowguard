@@ -5,7 +5,69 @@ All notable changes to FlowGuard are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Until v1.0.0, minor versions may
 include breaking changes.
 
-## [0.1.1] - Unreleased
+## [Unreleased]
+
+Planned for v0.2.0. Not released yet: build from `main` to try it.
+v0.2 Milestone 2 (delays, retries, timeouts, state polling, signing) is
+still to come and may change the schema below before release.
+
+### Added
+
+- `webhook` scenario kind: FlowGuard simulates a webhook provider. Declare
+  `endpoint`, `events` (with optional per-event `headers`) and `deliveries`;
+  the events are sent one at a time in list order, and repeating an event in
+  `deliveries` delivers a duplicate. Event JSON is encoded once per delivery
+  and sent byte for byte. See `docs/webhooks.md`.
+- Delivery expectations: every delivery is checked against
+  `expect.outcome` (`delivered` for 2xx, `rejected` otherwise; defaults to
+  `delivered`) and an optional exact `expect.status`, as the
+  `delivery[i].outcome` and `delivery[i].status` assertions.
+- Business-state assertions: `observe.request` reads JSON state with one
+  `GET` after the last delivery, and `assert.state` compares dot-paths
+  (`status`, `customer.id`, `items.0.sku`) by exact JSON type and value as
+  `state.<path>` assertions. A missing path fails; values at sensitive paths
+  are shown as `REDACTED`.
+- Webhook terminal output: one line per delivery
+  (`delivery[0] evt_paid_1: 200 delivered`).
+- Webhook JSON reports: steps gain `event_id` and `outcome`, both omitted
+  for idempotency steps.
+- `examples/mock-server` webhook receiver: `POST /webhooks` for synthetic
+  `order.created`, `order.paid` and `order.cancelled` events,
+  `GET /_test/orders/{id}` for order state, and a reset that clears it.
+  Buggy by default (duplicates and stale events apply); `-safe` follows
+  illustrative dedupe and ordering rules.
+- `flowguard.webhooks.example.yaml` duplicate-payment quickstart, with
+  end-to-end tests against the built binaries (buggy exits 1, safe exits 0).
+- Documentation: `docs/webhooks.md`, webhook sections in
+  `docs/test-state.md` and the README.
+
+### Changed
+
+- Terminal output prints a scenario's assertions before its runtime error,
+  so results gathered before the error stay visible. Idempotency output is
+  unchanged, because idempotency scenarios never have both.
+
+### Config validation
+
+- Webhook scenarios reject idempotency-only fields (`request`, `repeat`,
+  `assert.status`, `assert.business_effect_count`) and vice versa, with a
+  hint to the webhook equivalent.
+- `observe.request.method` must be `GET`; `observe` and `assert.state` must
+  be given together.
+- At most 100 events and 100 deliveries per scenario; event ids must be
+  unique and every delivery must name a declared event.
+- `expect.status` must be 100-599 and agree with `expect.outcome`.
+- Webhook headers may not repeat a name in different case or set
+  transport-managed headers such as `Host` or `Content-Length`.
+- `assert.state` values must be scalars; an unquoted date gets a hint to
+  quote it.
+
+### Compatibility
+
+- v0.1 configs, idempotency terminal output, JSON reports and exit codes are
+  unchanged; a golden test checks the report against v0.1.1 output.
+
+## [0.1.1] - 2026-10-27
 
 ### Fixed
 
@@ -68,5 +130,6 @@ status codes hide, starting with duplicate effects from retried requests.
 - A query string in `base_url` is ignored rather than rejected.
 - Webhook-fault scenarios are planned for v0.2.
 
-[0.1.1]: https://github.com/shakerShekhYousef/flowguard/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/shakerShekhYousef/flowguard/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/shakerShekhYousef/flowguard/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/shakerShekhYousef/flowguard/releases/tag/v0.1.0

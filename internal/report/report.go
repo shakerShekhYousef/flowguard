@@ -1,7 +1,8 @@
 // Package report builds and writes the machine-readable run report (FR-06).
 //
 // Steps record status, timing and error only — never request/response bodies
-// or headers. Every free-text field (errors, assertion reasons) passes
+// or headers. Webhook steps add the delivered event's ID and outcome; both
+// are omitted when empty, so idempotency reports keep the v0.1 shape. Every free-text field (errors, assertion reasons) passes
 // through redact.Text before it is stored, so URLs carry no userinfo or
 // query values and credential-like name/value pairs are masked.
 package report
@@ -31,7 +32,9 @@ type ScenarioReport struct {
 
 type StepReport struct {
 	Index      int    `json:"index"`
+	EventID    string `json:"event_id,omitempty"`
 	Status     int    `json:"status"`
+	Outcome    string `json:"outcome,omitempty"`
 	DurationMS int64  `json:"duration_ms"`
 	Error      string `json:"error,omitempty"`
 }
@@ -67,7 +70,9 @@ func Build(results []scenarios.Result) Report {
 		for _, step := range sr.Steps {
 			sRep.Steps = append(sRep.Steps, StepReport{
 				Index:      step.Index,
+				EventID:    redact.Text(step.EventID),
 				Status:     step.Status,
+				Outcome:    step.Outcome,
 				DurationMS: step.Duration.Milliseconds(),
 				Error:      redact.Error(step.Err),
 			})

@@ -199,11 +199,13 @@ func TestWebhookCLI_ExitCodes(t *testing.T) {
 	})
 }
 
-func TestWebhookCLI_DeliveryRuntimeError(t *testing.T) {
-	// The receiver drops the connection for evt_drop, so delivery[1] is a
-	// runtime error after delivery[0] already failed its assertion.
+// droppingReceiver rejects evt_note with 422 and drops the connection for
+// evt_drop, so a delivery runtime error follows a failed delivery assertion.
+// observed reports whether GET /state was ever requested.
+func droppingReceiver(t *testing.T) (url string, observed *atomic.Bool) {
+	t.Helper()
+	observed = new(atomic.Bool)
 	mux := http.NewServeMux()
-	var observed atomic.Bool
 	mux.HandleFunc("POST /webhooks", func(w http.ResponseWriter, r *http.Request) {
 		var evt struct{ ID string }
 		_ = json.NewDecoder(r.Body).Decode(&evt)
@@ -218,9 +220,11 @@ func TestWebhookCLI_DeliveryRuntimeError(t *testing.T) {
 	})
 	mux.HandleFunc("GET /state", func(w http.ResponseWriter, r *http.Request) { observed.Store(true) })
 	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	t.Cleanup(srv.Close)
+	return srv.URL, observed
+}
 
-	cfg := fmt.Sprintf(`version: 1
+const droppedConfig = `version: 1
 target: {base_url: %s, allowed_hosts: [127.0.0.1]}
 scenarios:
   - name: dropped
@@ -233,9 +237,12 @@ scenarios:
     deliveries: [{event: evt_note}, {event: evt_drop}, {event: evt_never}]
     observe: {request: {method: GET, path: /state}}
     assert: {state: {ok: true}}
-`, srv.URL)
+`
 
-	code, out := runCLI(t, cfg)
+func TestWebhookCLI_DeliveryRuntimeError(t *testing.T) {
+	url, observed := droppingReceiver(t)
+
+	code, out := runCLI(t, fmt.Sprintf(droppedConfig, url))
 
 	if code != exitRuntimeError {
 		t.Fatalf("exit = %d, want 2\n%s", code, out)
@@ -247,36 +254,5 @@ scenarios:
 		`  [ERROR] delivery[1] (event "evt_drop"): `)
 	if strings.Contains(out, "evt_never") || strings.Contains(out, "delivery[2]") || observed.Load() {
 		t.Fatalf("no delivery or observation may follow a runtime error (observed=%v):\n%s", observed.Load(), out)
-	}
-}
-
-func TestWebhookCLI_Report(t *testing.T) {
-	report := filepath.Join(t.TempDir(), "report.json")
-	code, out := runCLI(t, fmt.Sprintf(webhookConfig, receiver(t, false, http.StatusOK), twoPaid, "GET"), "--report", report)
-	if code != exitAssertionFail {
-		t.Fatalf("exit = %d, want 1\n%s", code, out)
-	}
-	data, err := os.ReadFile(report)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rep struct {
-		Passed    bool
-		Scenarios []struct {
-			Name       string
-			Passed     bool
-			Steps      []map[string]any
-			Assertions []struct{ Rule, Reason string }
-		}
-	}
-	if err := json.Unmarshal(data, &rep); err != nil {
-		t.Fatal(err)
-	}
-	sc := rep.Scenarios[0]
-	if rep.Passed || sc.Name != "duplicate-delivery" || sc.Passed || len(sc.Steps) != 2 || len(sc.Assertions) != 4 {
-		t.Fatalf("unexpected report: %s", data)
-	}
-	if sc.Assertions[2].Rule != "state.charges" || sc.Assertions[2].Reason != "state.charges: expected 1, got 2" {
-		t.Fatalf("state.charges in report = %+v", sc.Assertions[2])
 	}
 }
