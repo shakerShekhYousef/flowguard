@@ -1,8 +1,10 @@
 # Webhook testing
 
-> **Status:** v0.2 Milestone 1, unreleased. Available when built from the
-> `main` branch; not yet in a tagged release. The schema may still change
-> before v0.2.0.
+> **Status:** webhook scenarios are FlowGuard v0.2.0 (Milestone 1). Until
+> the `v0.2.0` tag is published, the latest release is v0.1.1, which has no
+> webhook support: build from a checkout of `main` to use them. Automatic
+> retries, delivery delays, timeout simulation, HMAC signing and state
+> polling are planned for v0.3.0 (Milestone 2).
 
 Webhook providers (payment processors, shipping carriers, identity
 providers) deliver events at least once. Networks fail, providers retry,
@@ -50,8 +52,9 @@ provider.
 | Final-state assertions | One `GET` after the last delivery; exact comparison of JSON values at dot-paths. |
 | Manual ordering | Declare events in any order you like, for example an older event after a newer one. FlowGuard sends them as listed; there are no reordering presets. |
 
-Not implemented yet: delivery delays, retry policies, timeout expectations,
-out-of-order presets, HMAC signing and state polling. See
+Not implemented (planned for v0.3.0): delivery delays, automatic retries,
+timeout simulation, out-of-order presets, HMAC signing and state polling.
+See
 [Limitations and planned features](#limitations-and-planned-features).
 Their config fields are rejected as unknown fields today, so a config can
 never appear to use them.
@@ -150,7 +153,7 @@ level, as in all FlowGuard configs.
 | `deliveries[].event` | yes | The `id` of a declared event. Repeat it to deliver a duplicate. |
 | `deliveries[].expect.outcome` | no | `delivered` (default) or `rejected`. |
 | `deliveries[].expect.status` | no | Exact HTTP status, 100-599. Must agree with the outcome. |
-| `observe.request` | with `assert.state` | `method` (must be `GET`), `path` and optional `headers` for the state request. |
+| `observe.request` | with `assert.state` | `method` (must be `GET`), `path` and optional `headers` for the state request. `json` is rejected: the state request has no body. |
 | `assert.state` | with `observe` | Map of dot-path to expected scalar value. |
 
 `observe` and `assert.state` must be given together. Both are optional: a
@@ -180,8 +183,18 @@ simply a repeated `deliveries` entry:
       - event: evt_paid_1      # duplicate
 ```
 
-Each delivery encodes its event's `json` with Go's `encoding/json`, which
-sorts object keys, so every delivery of an event sends identical bytes.
+Each delivery encodes its event's `json` with Go's `encoding/json`, so
+every delivery of an event sends identical bytes. The bytes are equivalent
+JSON, not a copy of your YAML text:
+
+- object keys are sorted;
+- whitespace is removed;
+- `<`, `>` and `&` in strings are escaped as `\u003c`, `\u003e` and
+  `\u0026`, and U+2028/U+2029 as `\u2028`/`\u2029` (any JSON parser reads
+  them back as the same characters).
+
+A receiver that parses JSON sees exactly the values you wrote. One that
+compares or hashes the raw bytes against another encoding may not.
 
 ## Header precedence
 
@@ -195,6 +208,15 @@ sorts object keys, so every delivery of an event sends identical bytes.
 - Transport-managed headers cannot be set: `Connection`, `Content-Length`,
   `Host`, `Keep-Alive`, `Proxy-Connection`, `Te`, `Trailer`,
   `Transfer-Encoding`, `Upgrade`.
+- Names must be valid HTTP header names (letters, digits and
+  ``!#$%&'*+-.^_`|~``). Values may not contain control characters other
+  than tab, so a CR or LF cannot inject another header.
+
+These rules apply to every header map in a webhook scenario: `setup`,
+`endpoint`, `events` and `observe.request`. They are checked when the
+config loads, so a bad header stops the run (exit 2) before any request,
+including `setup`, is sent. Errors name the header but never print its
+value.
 
 ```yaml
     endpoint:
@@ -284,9 +306,23 @@ endpoint and what a staging environment needs.
 - **Paths** walk object keys and non-negative array indexes. A key that
   itself contains a dot cannot be addressed.
 - **Values** must be scalars: string, number, boolean or `null`.
-- **Equality** is by JSON type and value. Numbers compare exactly, so `1`,
-  `1.0` and `1e0` are equal and large integers keep full precision. The
-  string `"1"` never equals the number `1`.
+- **Equality** is by JSON type and value. The string `"1"` never equals
+  the number `1`, and `true` never equals `"true"`.
+- **Numbers compare exactly**, as decimal values: `1`, `1.0` and `1e0` are
+  equal; `0.10000000000000001` is **not** equal to `0.1`; and
+  `12345678901234567890123` is not equal to `12345678901234568000000`.
+  FlowGuard reads expected numbers from the YAML text itself, so integers
+  of any size, decimals with many digits and scientific notation are never
+  rounded to a 64-bit float. Observed JSON numbers are kept exact too.
+- **Number limits:** exponents must be within ±1000 and a number may have at
+  most 2000 digits when written out. Anything larger is a config error,
+  never a silent approximation. `.inf` and `.nan` are rejected because JSON
+  has no such values.
+- **Unquoted means number.** `1e400`, `0x1F` and `010` are numbers, and
+  YAML reads a leading zero as octal: `0x1F` is 31 and `010` is 8. Quote a
+  value to compare it as a string (`"010"`).
+  Reports show expected numbers in plain decimal form: `1.50` as `1.5`,
+  `1e3` as `1000`.
 - **Missing paths fail.** A missing key is never treated as null, zero,
   false or an empty string.
 - **YAML typing:** an unquoted `2026-10-27` is read by YAML as a timestamp
@@ -304,9 +340,20 @@ another:
 
 Only asserted paths are reported. If any segment of a path looks sensitive
 (it contains `token`, `secret`, `password`, `api_key`, `signature`,
-`session` or a similar word), both values are shown as `REDACTED`. Other
-strings are redacted for credential-like content and truncated to 200
+`session` or a similar word), both values are shown as `REDACTED` and the
+message says so, without the values' types:
+
+```
+  [FAIL] state.api_token (sensitive path, values redacted): expected REDACTED, got REDACTED
+```
+
+Other strings are redacted for credential-like content and truncated to 200
 characters; objects and arrays are shown as `<object>` and `<array>`.
+Redaction is pattern-based: a value at a non-sensitive path is shown as it
+is unless it looks like a credential (a URL with credentials, a
+`name=value` pair with a sensitive name, a `Bearer` token). A bare secret
+such as `sk_live_…` at a path named `note` would be shown, so don't assert
+secrets at innocuously named paths.
 
 ## Errors and exit codes
 
@@ -315,7 +362,7 @@ characters; objects and arrays are shown as `<object>` and `<array>`.
 | All delivery and state assertions pass | pass | 0 |
 | A delivery outcome or status differs from `expect` | assertion failure; later deliveries and the state check still run | 1 |
 | A state value differs, or a path is missing | assertion failure | 1 |
-| Invalid config, including unknown fields | nothing runs | 2 |
+| Invalid config, including unknown fields, invalid headers and numbers that cannot be compared exactly | nothing runs, not even `setup` | 2 |
 | A `setup` request fails | the scenario stops before any delivery | 2 |
 | A delivery gets no response (refused, reset, timeout, host not allowed) | the scenario stops: no further deliveries, no state check; earlier results are kept | 2 |
 | The state request fails (transport error, non-200, invalid JSON) | delivery results are kept; no state assertions | 2 |
@@ -463,7 +510,16 @@ Webhook scenarios follow the same rules as every FlowGuard scenario; see
 - Terminal output and reports never include request or response bodies or
   headers. Errors and assertion reasons are redacted for URL credentials,
   query values, credential-like fields and bearer tokens. Redaction is
-  pattern-based, so treat reports as internal artifacts anyway.
+  pattern-based, so treat reports as internal artifacts anyway: scenario
+  names, event ids and state paths are shown as written (event ids are
+  pattern-redacted), and values at non-sensitive asserted paths are shown
+  unless they look like credentials (see
+  [State assertions](#state-assertions)).
+- Deliveries are **not signed**. FlowGuard does not generate HMAC or other
+  webhook signatures yet (planned for v0.3.0), so a receiver that verifies
+  signatures needs verification disabled, or a test-only bypass, in the
+  test environment. You can send a fixed signature header you computed
+  yourself, but it is static and is not recomputed per delivery.
 - Point FlowGuard only at receivers you own in a local or disposable test
   environment. Do not send synthetic events to a production receiver: they
   can trigger real side effects such as fulfilment or emails.
@@ -481,9 +537,14 @@ Milestone 1 limitations:
 - Webhook signatures are not generated, so a receiver that verifies
   signatures must have verification disabled in the test environment.
 - A state response over 1 MiB is reported as invalid JSON.
+- Event JSON is re-encoded, not sent as typed: keys are sorted and HTML
+  characters escaped (see [Events and deliveries](#events-and-deliveries)).
+- The quick example uses POSIX job control. On Windows, run the mock in a
+  second terminal; reports there are not restricted to `0600` (see the
+  README's platform notes).
 
-Planned for v0.2 Milestone 2 (not implemented; these fields are rejected
-today):
+Planned for v0.3.0 (Milestone 2; not implemented, and these fields are
+rejected today):
 
 | Planned feature | Planned config |
 | --------------- | -------------- |

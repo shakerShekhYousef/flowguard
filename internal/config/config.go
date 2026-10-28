@@ -3,6 +3,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -119,7 +120,7 @@ type AssertRule struct {
 	BusinessEffectCount *int `yaml:"business_effect_count"`
 	// State maps dot-paths in the observed JSON (e.g. order.status,
 	// charges.0.amount) to expected scalar values. Webhook scenarios only.
-	State map[string]any `yaml:"state"`
+	State StateAssertions `yaml:"state"`
 }
 
 // supportedKinds lists scenario kinds this version of FlowGuard can execute.
@@ -351,6 +352,14 @@ func (s *Scenario) validateWebhook() error {
 		return fmt.Errorf("assert.business_effect_count is only valid for idempotency scenarios (use observe and assert.state)")
 	}
 
+	// Header syntax is checked here, before anything is sent: a bad header
+	// found at send time would stop the run after setup already ran.
+	for i, r := range s.Setup {
+		if err := validateWebhookHeaders(r.Headers); err != nil {
+			return fmt.Errorf("setup[%d].headers: %w", i, err)
+		}
+	}
+
 	if s.Endpoint == nil {
 		return fmt.Errorf("endpoint is required")
 	}
@@ -422,6 +431,12 @@ func (s *Scenario) validateWebhook() error {
 		if s.Observe.Request.Path == "" {
 			return fmt.Errorf("observe.request.path is required")
 		}
+		if s.Observe.Request.JSON != nil {
+			return fmt.Errorf("observe.request.json is not allowed: state is read with a GET request that has no body")
+		}
+		if err := validateWebhookHeaders(s.Observe.Request.Headers); err != nil {
+			return fmt.Errorf("observe.request.headers: %w", err)
+		}
 		if len(s.Assert.State) == 0 {
 			return fmt.Errorf("assert.state: at least one path is required")
 		}
@@ -444,9 +459,12 @@ var transportHeaders = map[string]bool{
 	"Proxy-Connection": true, "Te": true, "Trailer": true, "Transfer-Encoding": true, "Upgrade": true,
 }
 
-// validateWebhookHeaders keeps header merging deterministic: endpoint
-// headers are defaults and event headers override them by canonical name,
-// so one map must not name the same header twice in different case.
+// validateWebhookHeaders checks one header map of a webhook scenario. Names
+// must be valid HTTP tokens and values free of control characters, so a
+// value cannot smuggle in CR/LF. It also keeps header merging
+// deterministic: endpoint headers are defaults and event headers override
+// them by canonical name, so one map must not name the same header twice in
+// different case. Values are never echoed in errors; they may be secrets.
 func validateWebhookHeaders(headers map[string]string) error {
 	names := make([]string, 0, len(headers))
 	for name := range headers {
@@ -456,6 +474,12 @@ func validateWebhookHeaders(headers map[string]string) error {
 
 	seen := make(map[string]string, len(names))
 	for _, name := range names {
+		if !validHeaderName(name) {
+			return fmt.Errorf("%q is not a valid header name (letters, digits and !#$%%&'*+-.^_`|~ only)", name)
+		}
+		if !validHeaderValue(headers[name]) {
+			return fmt.Errorf("%q has an invalid value: control characters such as CR or LF are not allowed", name)
+		}
 		canonical := http.CanonicalHeaderKey(name)
 		if transportHeaders[canonical] {
 			return fmt.Errorf("%q is managed by the HTTP transport and cannot be set", name)
@@ -466,6 +490,34 @@ func validateWebhookHeaders(headers map[string]string) error {
 		seen[canonical] = name
 	}
 	return nil
+}
+
+// validHeaderName reports whether name is an HTTP token (RFC 9110 5.1).
+func validHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validHeaderValue rejects ASCII control characters other than horizontal
+// tab, as net/http does when sending (RFC 9110 5.5).
+func validHeaderValue(v string) bool {
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; (c < ' ' && c != '\t') || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func onlyFor(field, kind string) error {
@@ -517,8 +569,10 @@ func validateStatePath(path string) error {
 // validateStateValue requires a JSON scalar so comparisons stay exact.
 func validateStateValue(v any) error {
 	switch x := v.(type) {
-	case nil, string, bool, int, int64, uint64:
+	case nil, string, bool, int, int64, uint64, json.Number:
 		return nil
+	case invalidNumber:
+		return fmt.Errorf("this number %s; write it with fewer digits or a smaller exponent", x.reason)
 	case float64:
 		if math.IsNaN(x) || math.IsInf(x, 0) {
 			return fmt.Errorf("%v cannot match any JSON value", x)

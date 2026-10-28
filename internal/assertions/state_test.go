@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/shakerShekhYousef/flowguard/internal/redact"
 )
 
 // decode parses JSON the way the observer does: numbers stay json.Number.
@@ -299,5 +301,78 @@ func TestEvaluateState_ReportTypes(t *testing.T) {
 	}
 	if got["state.customer"] != "<object>" {
 		t.Fatalf("objects should be summarized, got %#v", got["state.customer"])
+	}
+}
+
+// TestEvaluateState_ExactExpectedNumbers uses json.Number expected values,
+// the form config produces for every non-integer YAML number.
+func TestEvaluateState_ExactExpectedNumbers(t *testing.T) {
+	cases := []struct {
+		name, want, observed string
+		equal                bool
+	}{
+		{"T10: large integer vs its rounded value", "12345678901234567890123", "12345678901234568000000", false},
+		{"T10: precise fraction vs 0.1", "0.10000000000000001", "0.1", false},
+		{"large integer exact", "12345678901234567890123", "12345678901234567890123", true},
+		{"precise fraction exact", "0.10000000000000001", "0.100000000000000010", true},
+		{"1 vs 1.0", "1", "1.0", true},
+		{"negative", "-12.5", "-1.25e1", true},
+		{"negative vs positive", "-12.5", "12.5", false},
+		{"scientific", "1000", "1E3", true},
+		{"tiny difference", "1.0000000000000000000001", "1", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := one(t, "v", json.Number(tc.want), `{"v": `+tc.observed+`}`)
+			if r.Passed != tc.equal {
+				t.Fatalf("Passed = %v, want %v (%+v)", r.Passed, tc.equal, r)
+			}
+			if r.Expected != json.Number(tc.want) {
+				t.Fatalf("Expected must be reported exactly, got %#v", r.Expected)
+			}
+		})
+	}
+
+	t.Run("reason shows the exact values", func(t *testing.T) {
+		r := one(t, "v", json.Number("12345678901234567890123"), `{"v": 12345678901234568000000}`)
+		if want := "state.v: expected 12345678901234567890123, got 12345678901234568000000"; r.Reason != want {
+			t.Fatalf("Reason = %q, want %q", r.Reason, want)
+		}
+	})
+}
+
+// TestEvaluateState_SensitivePathReasonsSurviveRedaction checks the reason
+// as the terminal and report show it: after redact.Text.
+func TestEvaluateState_SensitivePathReasonsSurviveRedaction(t *testing.T) {
+	observed := decode(t, `{"api_token": "tok_ACTUAL_SYNTH", "auth": {"session": {"id": 7}}, "password": "pw_SYNTH"}`)
+	cases := []struct {
+		path string
+		want any
+		text string
+	}{
+		{"api_token", "tok_EXPECTED_SYNTH", "state.api_token (sensitive path, values redacted): expected REDACTED, got REDACTED"},
+		{"auth.session.id", 8, "state.auth.session.id (sensitive path, values redacted): expected REDACTED, got REDACTED"},
+		// A type mismatch must not reveal the hidden values' types.
+		{"password", 1, "state.password (sensitive path, values redacted): expected REDACTED, got REDACTED"},
+		{"refresh_token", "x", `state.refresh_token (sensitive path, values redacted): expected REDACTED, but path not found: no key "refresh_token" in object at the top level`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			r := EvaluateState(map[string]any{tc.path: tc.want}, observed)[0]
+			if r.Passed {
+				t.Fatal("test setup: expected a mismatch")
+			}
+			if r.Reason != tc.text {
+				t.Fatalf("Reason = %q, want %q", r.Reason, tc.text)
+			}
+			if shown := redact.Text(r.Reason); shown != tc.text {
+				t.Fatalf("redaction changes the reason to %q", shown)
+			}
+			for _, secret := range []string{"tok_ACTUAL_SYNTH", "tok_EXPECTED_SYNTH", "pw_SYNTH"} {
+				if strings.Contains(r.Reason, secret) {
+					t.Fatalf("reason leaks %q", secret)
+				}
+			}
+		})
 	}
 }

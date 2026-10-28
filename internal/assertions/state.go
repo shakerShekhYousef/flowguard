@@ -40,9 +40,18 @@ func evaluateStatePath(path string, want, observed any) Result {
 	secret := sensitivePath(path)
 	r := Result{Rule: rule, Expected: displayValue(want, secret)}
 
+	// "state.api_token: expected …" would read as a credential pair to
+	// redact.Text, which output and reports apply to every reason, and the
+	// word "expected" would be masked. Marking the path keeps the colon
+	// away from the sensitive name.
+	prefix := rule
+	if secret {
+		prefix += " (sensitive path, values redacted)"
+	}
+
 	got, err := lookup(observed, path)
 	if err != nil {
-		r.Reason = fmt.Sprintf("%s: expected %s, but %v", rule, displayText(want, secret), err)
+		r.Reason = fmt.Sprintf("%s: expected %s, but %v", prefix, displayText(want, secret), err)
 		return r
 	}
 	r.Actual = displayValue(got, secret)
@@ -51,10 +60,12 @@ func evaluateStatePath(path string, want, observed any) Result {
 		r.Passed = true
 		return r
 	}
-	if wk, gk := jsonKind(want), jsonKind(got); wk != gk {
-		r.Reason = fmt.Sprintf("%s: expected %s (%s), got %s (%s)", rule, displayText(want, secret), wk, displayText(got, secret), gk)
+	// Types are omitted for sensitive paths: they say something about the
+	// hidden values.
+	if wk, gk := jsonKind(want), jsonKind(got); wk != gk && !secret {
+		r.Reason = fmt.Sprintf("%s: expected %s (%s), got %s (%s)", prefix, displayText(want, secret), wk, displayText(got, secret), gk)
 	} else {
-		r.Reason = fmt.Sprintf("%s: expected %s, got %s", rule, displayText(want, secret), displayText(got, secret))
+		r.Reason = fmt.Sprintf("%s: expected %s, got %s", prefix, displayText(want, secret), displayText(got, secret))
 	}
 	return r
 }
@@ -140,8 +151,11 @@ func jsonKind(v any) string {
 	}
 }
 
-// toRat converts a number to an exact rational. A float64 is converted via
-// its shortest decimal form, so YAML 0.1 equals JSON 0.1.
+// toRat converts a number to an exact rational. json.Number (observed JSON,
+// and every non-integer YAML number from config) and the integer types are
+// exact. A float64 has already been rounded by whoever produced it, so it is
+// read as its shortest decimal form (0.1, not 0.1000000000000000055…);
+// config never produces one for a finite value.
 func toRat(v any) (*big.Rat, bool) {
 	var s string
 	switch n := v.(type) {

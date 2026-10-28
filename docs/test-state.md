@@ -6,7 +6,7 @@ actually happened, through a test-only endpoint:
 
 - `idempotency` scenarios read a count from a fixed convention,
   [`GET /_test/business-effect-count`](#idempotency-business-effect-count).
-- `webhook` scenarios (v0.2, unreleased) read any JSON state from a path you
+- `webhook` scenarios (v0.2.0) read any JSON state from a path you
   declare in `observe.request`, such as the mock's
   [`GET /_test/orders/{id}`](#webhook-order-state).
 

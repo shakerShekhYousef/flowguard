@@ -330,6 +330,20 @@ func TestLoad_WebhookHeaderRules(t *testing.T) {
 		{"event Content-Length", []string{"headers: {X-Event-Type: order.paid}", "headers: {Content-Length: \"5\"}"}, `events[0].headers: "Content-Length" is managed by the HTTP transport`},
 		{"event Transfer-Encoding", []string{"headers: {X-Event-Type: order.paid}", "headers: {transfer-encoding: chunked}"}, `"transfer-encoding" is managed by the HTTP transport`},
 		{"endpoint Connection", []string{"headers: {X-Source: flowguard}", "headers: {Connection: close}"}, `"Connection" is managed by the HTTP transport`},
+		// syntax: names must be tokens, values must not contain control characters
+		{"name with space", []string{"headers: {X-Source: flowguard}", `headers: {"X Source": a}`}, `endpoint.headers: "X Source" is not a valid header name`},
+		{"name with colon", []string{"headers: {X-Event-Type: order.paid}", `headers: {"X-A:b": a}`}, `events[0].headers: "X-A:b" is not a valid header name`},
+		{"name with CRLF", []string{"headers: {X-Source: flowguard}", `headers: {"X-A\r\nX-Injected": a}`}, `endpoint.headers: "X-A\r\nX-Injected" is not a valid header name`},
+		{"empty name", []string{"headers: {X-Source: flowguard}", `headers: {"": a}`}, `endpoint.headers: "" is not a valid header name`},
+		{"non-ASCII name", []string{"headers: {X-Source: flowguard}", `headers: {"X-Séance": a}`}, `is not a valid header name`},
+		{"value with CRLF injection", []string{"headers: {X-Event-Type: order.paid}", `headers: {X-Event-Type: "a\r\nX-Injected: 1"}`}, `events[0].headers: "X-Event-Type" has an invalid value: control characters such as CR or LF are not allowed`},
+		{"value with bare LF", []string{"headers: {X-Source: flowguard}", `headers: {X-Source: "a\nb"}`}, `endpoint.headers: "X-Source" has an invalid value`},
+		{"value with NUL", []string{"headers: {X-Source: flowguard}", `headers: {X-Source: "a\0b"}`}, `has an invalid value`},
+		{"value with DEL", []string{"headers: {X-Source: flowguard}", `headers: {X-Source: "a\x7fb"}`}, `has an invalid value`},
+		{"setup header", []string{"      - {method: POST, path: /_test/reset}", `      - {method: POST, path: /_test/reset, headers: {X-Reset: "a\rb"}}`}, `setup[0].headers: "X-Reset" has an invalid value`},
+		{"setup transport header", []string{"      - {method: POST, path: /_test/reset}", `      - {method: POST, path: /_test/reset, headers: {Host: evil.example}}`}, `setup[0].headers: "Host" is managed by the HTTP transport`},
+		{"observe header", []string{"{method: GET, path: /_test/orders/ord_1}", `{method: GET, path: /_test/orders/ord_1, headers: {"Bad Name": x}}`}, `observe.request.headers: "Bad Name" is not a valid header name`},
+		{"observe case duplicate", []string{"{method: GET, path: /_test/orders/ord_1}", `{method: GET, path: /_test/orders/ord_1, headers: {X-T: a, x-t: b}}`}, `observe.request.headers: "X-T" and "x-t" are the same header`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -344,6 +358,20 @@ func TestLoad_WebhookHeaderRules(t *testing.T) {
 		cfg := webhookWith(t, "headers: {X-Event-Type: order.paid}", "headers: {x-source: event, Content-Type: application/cloudevents+json}")
 		if _, err := Load(writeTemp(t, cfg)); err != nil {
 			t.Fatalf("cross-map overrides must be allowed: %v", err)
+		}
+	})
+
+	t.Run("valid names and values load", func(t *testing.T) {
+		cfg := webhookWith(t, "headers: {X-Source: flowguard}", "headers: {\"X-Custom_1.v2!#$%&'*+^`|~\": \"a\\tb (tab), unicode é, quotes \\\" and :;\"}")
+		if _, err := Load(writeTemp(t, cfg)); err != nil {
+			t.Fatalf("token names and printable values must be allowed: %v", err)
+		}
+	})
+
+	t.Run("errors never echo header values", func(t *testing.T) {
+		_, err := Load(writeTemp(t, webhookWith(t, "headers: {X-Source: flowguard}", `headers: {Authorization: "Bearer tok_SYNTH\r\nX: y"}`)))
+		if err == nil || strings.Contains(err.Error(), "tok_SYNTH") {
+			t.Fatalf("want an error without the value, got %v", err)
 		}
 	})
 
@@ -376,4 +404,23 @@ func TestLoad_ObserveMethodMustBeGET(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLoad_ObserveRejectsJSONBody(t *testing.T) {
+	for _, body := range []string{"{a: 1}", "{}"} {
+		t.Run(body, func(t *testing.T) {
+			_, err := Load(writeTemp(t, webhookWith(t, "{method: GET, path: /_test/orders/ord_1}", "{method: GET, path: /_test/orders/ord_1, json: "+body+"}")))
+			want := "scenarios[0]: observe.request.json is not allowed: state is read with a GET request that has no body"
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("want %q, got %v", want, err)
+			}
+		})
+	}
+
+	t.Run("observe with headers and a query still loads", func(t *testing.T) {
+		cfg := webhookWith(t, "{method: GET, path: /_test/orders/ord_1}", "{method: GET, path: \"/_test/orders/ord_1?tenant=t1\", headers: {X-Test-Tenant: t1}}")
+		if _, err := Load(writeTemp(t, cfg)); err != nil {
+			t.Fatal(err)
+		}
+	})
 }

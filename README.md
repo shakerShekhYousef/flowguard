@@ -15,10 +15,15 @@ Early stage. Expect breaking changes until v1.
 
 | Feature | Status |
 | ------- | ------ |
-| `idempotency` scenarios: replay a request, assert status and business-effect count | Released in v0.1.0; latest release v0.1.1 |
+| `idempotency` scenarios: replay a request, assert status and business-effect count | Released in v0.1.0 |
 | JSON reports, CI exit codes, host allow-list, redaction | Released in v0.1.0 |
-| `webhook` scenarios: sequential and duplicate deliveries, outcome and status expectations, final-state assertions | **Unreleased** (v0.2 Milestone 1): available when built from `main` |
-| Webhook delays, retries, timeouts, state polling, HMAC signing | Planned (v0.2 Milestone 2) |
+| `webhook` scenarios: sequential, duplicate and manually reordered deliveries, outcome and status expectations, exact final-state assertions | v0.2.0 (Milestone 1), on `main` |
+| Automatic retries, delivery delays, timeout simulation, HMAC signing, state polling | Planned for v0.3.0 (Milestone 2); not implemented |
+
+> **Release status:** v0.2.0 is prepared on `main`. Until the `v0.2.0` tag
+> is published, the latest release is v0.1.1, which has no webhook support,
+> and `go install …@latest` installs it. To use webhook scenarios before
+> then, build from a checkout of `main`.
 
 ## Documentation
 
@@ -123,10 +128,10 @@ instead and the run passes (exit code 0).
 
 ## Webhook quickstart
 
-> Webhook scenarios are not in a release yet. Build `./flowguard` from a
-> checkout of `main` as shown above; a binary installed with
-> `go install ...@latest` (v0.1.1) rejects the webhook example with
-> `unknown field` config errors (exit code 2).
+> Webhook scenarios need v0.2.0 or a build of `main`. A v0.1.1 binary
+> rejects the webhook example with `unknown field` config errors (exit
+> code 2). Until the `v0.2.0` tag is published, build `./flowguard` from a
+> checkout as shown above.
 
 Payment providers retry webhooks, so receivers see the same event more than
 once. `flowguard.webhooks.example.yaml` plays the provider: it delivers one
@@ -257,11 +262,33 @@ docs/               User docs (webhooks, test-state endpoints) and design notes
 - State is read once, right after the last request or delivery; services
   that process asynchronously are not supported yet.
 - Webhook deliveries are sent once each, sequentially, without delays,
-  retries or signatures (planned for v0.2 Milestone 2).
+  retries or signatures; those are planned for v0.3.0. A receiver that
+  verifies webhook signatures needs verification disabled in the test
+  environment.
+- Webhook event bodies are re-encoded with Go's `encoding/json`: keys are
+  sorted and `<`, `>`, `&` are escaped as `\u003c`, `\u003e`, `\u0026`.
+  The JSON values are identical, but the bytes differ from the YAML text.
+- Idempotency scenarios are validated exactly as in v0.1.1. Their header
+  names and values are not syntax-checked at load time, so a header that
+  net/http refuses (for example one containing a newline) is reported when
+  the request is sent, as a runtime error (exit code 2), after any `setup`
+  requests have run. Webhook scenarios check all their headers at load
+  time.
 - A query string in `base_url` is ignored rather than rejected.
-- Redaction is pattern-based. It covers common credential formats but cannot
-  recognise every secret, so keep real secrets out of configs and treat
+- Redaction is pattern-based. It covers URL credentials, query values,
+  `name=value` pairs with sensitive names and `Bearer`/`Basic` tokens, but
+  cannot recognise every secret: a bare token such as `sk_live_…` in an
+  error or an asserted state value is shown as is. Scenario names and rule
+  names are never redacted. Keep real secrets out of configs and treat
   reports as internal artifacts.
+
+## Platform support
+
+| Platform | Status |
+| -------- | ------ |
+| Linux | Supported; CI runs gofmt, `go vet` and `go test -race` on Ubuntu. |
+| macOS | Supported; tested locally by the maintainer, not in CI. |
+| Windows | Builds, but is not tested in CI. Reports cannot be restricted to owner-only `0600` (Windows permissions do not map to Unix modes), so protect the report directory instead. The quickstarts use POSIX job control (`&`, `kill %1`); run the mock in a second terminal instead. |
 
 ## Safety
 

@@ -256,3 +256,38 @@ func TestWebhookCLI_DeliveryRuntimeError(t *testing.T) {
 		t.Fatalf("no delivery or observation may follow a runtime error (observed=%v):\n%s", observed.Load(), out)
 	}
 }
+
+// TestWebhookCLI_InvalidHeaderSendsNothing: a header that net/http would
+// refuse is a config error, caught before setup or any delivery is sent.
+func TestWebhookCLI_InvalidHeaderSendsNothing(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1) }))
+	defer srv.Close()
+
+	for name, headers := range map[string]string{
+		"value with CRLF": `{X-Event-Type: "paid\r\nX-Injected: 1"}`,
+		"name with space": `{"X Event": paid}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, out := runCLI(t, fmt.Sprintf(`version: 1
+target: {base_url: %s, allowed_hosts: [127.0.0.1]}
+scenarios:
+  - name: bad-header
+    kind: webhook
+    setup: [{method: POST, path: /_test/reset}]
+    endpoint: {method: POST, path: /webhooks}
+    events: [{id: e1, headers: %s, json: {id: e1}}]
+    deliveries: [{event: e1}]
+`, srv.URL, headers))
+			if code != exitRuntimeError {
+				t.Fatalf("exit = %d, want 2\n%s", code, out)
+			}
+			if !strings.Contains(out, "events[0].headers") || strings.Contains(out, "Running:") {
+				t.Fatalf("want a config error before any scenario runs:\n%s", out)
+			}
+			if n := requests.Load(); n != 0 {
+				t.Fatalf("%d request(s) reached the target; setup must not run", n)
+			}
+		})
+	}
+}
