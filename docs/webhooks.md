@@ -101,15 +101,20 @@ scenarios:
 ```
 
 Run it from a checkout, which has the mock and the example config (POSIX
-shell; `&` and `kill %1` are job control). An installed v0.2.0 `flowguard`
-works in place of the local build:
+shell: `&` starts the mock in the background and `kill $!` stops it). An installed v0.2.0 `flowguard`
+works in place of `bin/flowguard`:
 
 ```bash
-go build -o flowguard ./cmd/flowguard
-go run ./examples/mock-server &        # buggy by default
-./flowguard test --config flowguard.webhooks.example.yaml
-kill %1
+go build -o bin/ ./cmd/flowguard ./examples/mock-server
+bin/mock-server &          # buggy by default
+sleep 1                    # let the mock start listening
+bin/flowguard test --config flowguard.webhooks.example.yaml
+kill $!
 ```
+
+Build the mock before starting it, as above. With `go run` the mock may
+still be compiling when FlowGuard sends its first request, which then
+fails with `connection refused` (exit code 2).
 
 Against the buggy mock, both deliveries succeed but the order is charged
 twice, so the run fails with exit code 1:
@@ -126,8 +131,8 @@ Running: duplicate-payment
   [PASS] state.status
 ```
 
-Start the mock with `go run ./examples/mock-server -safe &` instead and the
-same command passes with exit code 0 (`[PASS] state.charges`).
+Start the mock with `bin/mock-server -safe &` instead and the same command
+passes with exit code 0 (`[PASS] state.charges`).
 
 Every delivery check passed in both runs. Only the business state shows the
 bug, which is why a webhook test should assert on state, not just on status

@@ -1,37 +1,169 @@
 # FlowGuard
 
-**FlowGuard helps backend developers catch duplicate charges and broken webhook
-workflows before release, using reproducible CLI tests and business-rule
-assertions.**
+[![CI](https://github.com/shakerShekhYousef/flowguard/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/shakerShekhYousef/flowguard/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/shakerShekhYousef/flowguard?sort=semver&label=release)](https://github.com/shakerShekhYousef/flowguard/releases)
+[![Go version](https://img.shields.io/github/go-mod/go-version/shakerShekhYousef/flowguard)](go.mod)
+[![License: MIT](https://img.shields.io/github/license/shakerShekhYousef/flowguard)](LICENSE)
 
-An API can return `HTTP 200` while its business state is wrong: a retried
-payment can double-charge a customer, a duplicated webhook can apply an
-effect twice, a delayed event can leave state inconsistent. FlowGuard tests
-for *business-logic correctness*, not just response codes.
+**FlowGuard is a command-line tool that checks whether your API's business
+state stays correct when requests are retried and webhooks arrive twice or
+out of order.**
 
-## Status
+## The problem
 
-Early stage. Expect breaking changes until v1.
+An API can answer `HTTP 200` while its business state is wrong:
+
+- a client retries a payment request and the customer is charged twice;
+- a payment provider delivers the same webhook twice and the order is
+  fulfilled twice;
+- an older event arrives after a newer one and moves an order back to an
+  earlier state.
+
+Every response looks fine, so tests and monitors that only check status
+codes see nothing wrong. The bug is only visible in the resulting state.
+
+## How FlowGuard differs from ordinary API tests
+
+| A typical API test | A FlowGuard scenario |
+| ------------------ | -------------------- |
+| Sends a request once and checks the response. | Replays the same request, or delivers the same webhook event again or out of order. |
+| Asserts on status codes and response bodies. | Asserts on **business state** after all requests: how many charges were applied, which status the order ended in. |
+| Test logic lives in code. | Scenarios are declarative YAML; results are CI exit codes and a JSON report. |
+| Can reach any host the test code names. | Only contacts hosts listed in `allowed_hosts`, including every redirect hop. |
+
+You can write these checks by hand in any test framework. FlowGuard
+packages the replay, the state check and the safety rails so that each
+scenario is a few lines of config. It needs a test-only endpoint on your
+service that reports the state to check (see
+[docs/test-state.md](docs/test-state.md)).
+
+## What you can test
+
+- **Idempotency** (`kind: idempotency`): send the same request several
+  times with one `Idempotency-Key`, then check that the business effect
+  happened exactly once and that every response had the expected status.
+- **Webhook receivers** (`kind: webhook`): FlowGuard plays the webhook
+  provider. It delivers the events you declare, in the order you list
+  them, including duplicates and late events. It checks each delivery's
+  outcome (`delivered` for 2xx, `rejected` otherwise) and then the
+  receiver's final state, with exact comparison of JSON values. It
+  simulates a provider's deliveries; it does not test a real provider's
+  own retry scheduler and never contacts one.
+
+## Feature status
 
 | Feature | Status |
 | ------- | ------ |
 | `idempotency` scenarios: replay a request, assert status and business-effect count | Released in v0.1.0 |
 | JSON reports, CI exit codes, host allow-list, redaction | Released in v0.1.0 |
-| `webhook` scenarios: sequential, duplicate and manually reordered deliveries, outcome and status expectations, exact final-state assertions | Released in v0.2.0 (Milestone 1) |
-| Automatic retries, delivery delays, timeout simulation, HMAC signing, state polling | Planned for v0.3.0 (Milestone 2); not implemented |
+| `webhook` scenarios: sequential, duplicate and manually reordered deliveries, outcome and status expectations, exact final-state assertions | Released in v0.2.0 |
+| Automatic retries, delivery delays, timeout simulation, HMAC signing, state polling | **Planned** for v0.3.0; not implemented |
 
-## Documentation
+FlowGuard is at an early stage. Expect breaking changes until v1.
 
-- [docs/webhooks.md](docs/webhooks.md): webhook scenarios, configuration,
-  outcomes, state assertions, reports and limitations.
-- [docs/test-state.md](docs/test-state.md): the test-state endpoints
-  FlowGuard reads, the mock server's rules, reset strategies and staging
-  requirements.
-- [CHANGELOG.md](CHANGELOG.md): release history and unreleased changes.
+## Install
 
-## How it works
+Requires Go 1.25.3 or newer.
 
-Define a scenario in YAML:
+```bash
+go install github.com/shakerShekhYousef/flowguard/cmd/flowguard@v0.2.0
+flowguard version    # flowguard version v0.2.0
+```
+
+The binary lands in `$(go env GOBIN)`, or `$(go env GOPATH)/bin` if `GOBIN`
+is unset; make sure that directory is on your `PATH`. The module path is
+case-sensitive: use `shakerShekhYousef` exactly as written. Use `@latest`
+instead of `@v0.2.0` to get the newest release.
+
+## Try it in two minutes
+
+The repository includes a mock API with a deliberate bug and example
+configs, so you can see a failing and a passing run without touching any
+real service. The commands below use a POSIX shell (macOS, Linux, WSL);
+see [Platform support](#platform-support) for Windows.
+
+**1. Build FlowGuard and the mock:**
+
+```bash
+git clone https://github.com/shakerShekhYousef/flowguard.git
+cd flowguard
+go build -o bin/ ./cmd/flowguard ./examples/mock-server
+```
+
+**2. Start the buggy mock and deliver a duplicate webhook:**
+
+```bash
+bin/mock-server &          # buggy by default: a duplicate event charges again
+sleep 1                    # give it a moment to start listening
+bin/flowguard test --config flowguard.webhooks.example.yaml
+```
+
+```
+Running: duplicate-payment
+  delivery[0] evt_paid_1: 200 delivered
+  delivery[1] evt_paid_1: 200 delivered
+  [PASS] delivery[0].outcome
+  [PASS] delivery[0].status
+  [PASS] delivery[1].outcome
+  [PASS] delivery[1].status
+  [FAIL] state.charges: expected 1, got 2
+  [PASS] state.status
+```
+
+The exit code is `1`. Both deliveries got `200`, so every delivery check
+passed, but the order was charged twice.
+
+**3. Restart the mock in safe mode and run it again:**
+
+```bash
+kill $!                    # stop the buggy mock ($! is the last background job)
+bin/mock-server -safe &    # dedupes events by id
+sleep 1
+bin/flowguard test --config flowguard.webhooks.example.yaml
+```
+
+```
+Running: duplicate-payment
+  delivery[0] evt_paid_1: 200 delivered
+  delivery[1] evt_paid_1: 200 delivered
+  [PASS] delivery[0].outcome
+  [PASS] delivery[0].status
+  [PASS] delivery[1].outcome
+  [PASS] delivery[1].status
+  [PASS] state.charges
+  [PASS] state.status
+```
+
+The exit code is `0`.
+
+**4. Try the idempotency example against the same mock, then stop it:**
+
+```bash
+bin/flowguard test --config flowguard.example.yaml --report report.json
+kill $!
+```
+
+```
+Running: charge-once
+  [PASS] status
+  [PASS] business_effect_count
+
+report written to report.json
+```
+
+Against the buggy mock, the same command prints
+`[FAIL] business_effect_count: expected 1, got 2` and exits `1`. Every
+example resets the mock in `setup`, so re-running gives the same result.
+Each run also prints a `FlowGuard <version>` header line, omitted above.
+
+The mock's safe mode follows illustrative rules (dedupe by event id, ignore
+stale `sequence` numbers, treat cancelled as final, charge an order at most
+once). They show the kind of invariant FlowGuard checks; they are not
+universal requirements for payment systems.
+
+## Write your own scenario
+
+An idempotency scenario:
 
 ```yaml
 version: 1
@@ -58,139 +190,26 @@ scenarios:
       business_effect_count: 1
 ```
 
-Run it:
-
 ```bash
 flowguard test --config flowguard.yaml --report report.json
 ```
 
-`base_url` must be just a scheme and host (with optional port), such as
-`http://127.0.0.1:8080`. A path prefix like `/api/v1` is rejected, since it
-would otherwise be ignored and the scenario would test a different endpoint.
-Put the prefix in each request path instead (`path: /api/v1/orders`).
+- `base_url` must be just a scheme and host (with optional port), such as
+  `http://127.0.0.1:8080`. A path prefix like `/api/v1` is rejected, since
+  it would otherwise be ignored. Put the prefix in each request path
+  instead (`path: /api/v1/orders`).
+- FlowGuard reads the business-effect count from a test-state endpoint on
+  the target; see [docs/test-state.md](docs/test-state.md) for the
+  contract and for what a staging environment needs.
+- `setup` requests run before the scenario so every run starts from a known
+  state. FlowGuard never resets a target unless you declare it; see
+  [Fixtures and isolation](docs/test-state.md#fixtures-and-isolation), and
+  only reset environments you own.
 
-FlowGuard learns the business-effect count from a test-state endpoint on the
-target; see [docs/test-state.md](docs/test-state.md) for the contract.
-
-`setup` requests run before the scenario so every run starts from a known
-state. FlowGuard never resets a target unless you declare it; see
-[Fixtures and isolation](docs/test-state.md#fixtures-and-isolation) for how
-to manage fixtures, and only reset environments you own.
-
-FlowGuard replays the request against an explicitly allow-listed target and
-checks whether the underlying business effect (e.g. an order being created)
-happened exactly once — not just whether the HTTP response looked fine.
-
-## Install
-
-Requires Go 1.25.3 or newer.
-
-```bash
-go install github.com/shakerShekhYousef/flowguard/cmd/flowguard@v0.2.0
-flowguard version    # flowguard version v0.2.0
-```
-
-The binary lands in `$(go env GOBIN)`, or `$(go env GOPATH)/bin` if `GOBIN`
-is unset; make sure that directory is on your `PATH`. The module path is
-case-sensitive: use `shakerShekhYousef` exactly as written. Use `@latest`
-instead of `@v0.2.0` to get the newest release.
-
-Or build from a checkout:
-
-```bash
-git clone https://github.com/shakerShekhYousef/flowguard.git
-cd flowguard
-go build -o flowguard ./cmd/flowguard
-./flowguard version
-```
-
-## Idempotency quickstart
-
-Run from a checkout, which has the bundled mock server and example configs,
-after building `./flowguard` as shown above (an installed `flowguard` works
-too). The
-commands use a POSIX shell (`&` starts the mock in the background and
-`kill %1` stops it); on Windows, run the mock in a second terminal instead.
-
-```bash
-go run ./examples/mock-server &        # buggy: retries double-charge
-./flowguard test --config flowguard.example.yaml
-# [FAIL] business_effect_count: expected 1, got 2   (exit code 1)
-kill %1
-```
-
-Re-running gives the same result every time, because the example resets the
-mock in `setup`. Start the mock with `go run ./examples/mock-server -safe &`
-instead and the run passes (exit code 0).
-
-## Webhook quickstart
-
-> Webhook scenarios need v0.2.0 or later. A v0.1.1 binary rejects the
-> webhook example with `unknown field` config errors (exit code 2); check
-> with `flowguard version` and reinstall as shown above if needed.
-
-Payment providers retry webhooks, so receivers see the same event more than
-once. `flowguard.webhooks.example.yaml` plays the provider: it delivers one
-`order.paid` event twice, then reads the order's state from the receiver.
-The same POSIX shell notes apply as above.
-
-Start the bundled mock receiver (buggy by default) and run the example:
-
-```bash
-go run ./examples/mock-server &        # buggy: a duplicate event charges again
-./flowguard test --config flowguard.webhooks.example.yaml
-```
-
-```
-Running: duplicate-payment
-  delivery[0] evt_paid_1: 200 delivered
-  delivery[1] evt_paid_1: 200 delivered
-  [PASS] delivery[0].outcome
-  [PASS] delivery[0].status
-  [PASS] delivery[1].outcome
-  [PASS] delivery[1].status
-  [FAIL] state.charges: expected 1, got 2
-  [PASS] state.status
-```
-
-The exit code is 1. Stop the mock (`kill %1`), restart it in safe mode and
-run the same command again:
-
-```bash
-go run ./examples/mock-server -safe &  # dedupes events by id
-./flowguard test --config flowguard.webhooks.example.yaml
-```
-
-```
-  ...
-  [PASS] state.charges
-  [PASS] state.status
-```
-
-The exit code is 0. Stop the mock with `kill %1` when you are done.
-
-**Why HTTP 200 is not enough:** the buggy receiver answers both deliveries
-with 200, so every delivery check passes; a monitor watching status codes
-would see nothing wrong. The bug is only visible in business state, the
-customer charged twice, which is why the scenario asserts on
-`GET /_test/orders/ord_1` after the deliveries.
-
-The mock's safe mode follows illustrative rules (dedupe by event id, ignore
-stale `sequence` numbers, treat cancelled as final, charge an order at most
-once). They show the kind of invariant FlowGuard checks; they are not
-universal requirements for payment systems. FlowGuard simulates a webhook
-provider's deliveries; it does not test a real provider's internal retry
-scheduler.
-
-See [docs/webhooks.md](docs/webhooks.md) for the full configuration
-reference and more examples.
-
-## Development
-
-```bash
-go test ./...          # unit + end-to-end tests
-go test -short ./...   # skip the end-to-end tests that build binaries
-```
+For webhook scenarios (`endpoint`, `events`, `deliveries`, `observe`,
+`assert.state`), start from
+[`flowguard.webhooks.example.yaml`](flowguard.webhooks.example.yaml) and see
+[docs/webhooks.md](docs/webhooks.md).
 
 ## Assertions
 
@@ -229,7 +248,7 @@ status:
 `failed_requests` is omitted when the rule passes, so passing reports are
 unchanged.
 
-## Exit codes
+## Exit codes and reports
 
 | Code | Meaning                          |
 | ---- | -------------------------------- |
@@ -237,19 +256,22 @@ unchanged.
 | 1    | A business assertion failed      |
 | 2    | Configuration or runtime error   |
 
-## Project layout
+`--report <file>` writes a JSON report with each step's status and timing
+and every assertion's expected and actual value. Reports are created with
+owner-only permissions (`0600`) and never contain request or response
+bodies or headers.
 
-```
-cmd/flowguard/      CLI entry point
-internal/config/    YAML parsing and validation
-internal/runner/    Allow-listed HTTP execution
-internal/scenarios/ Scenario kinds (idempotency, webhook)
-internal/assertions/ Business-effect assertions
-internal/report/    JSON report generation
-examples/mock-server/ Local synthetic API and webhook receiver for demos
-tests/              End-to-end tests against the built binary
-docs/               User docs (webhooks, test-state endpoints) and design notes
-```
+## Documentation
+
+- [docs/webhooks.md](docs/webhooks.md): webhook scenarios, configuration,
+  outcomes, state assertions, reports and limitations.
+- [docs/test-state.md](docs/test-state.md): the test-state endpoints
+  FlowGuard reads, the mock server's rules, reset strategies and staging
+  requirements.
+- [CHANGELOG.md](CHANGELOG.md): release history and unreleased changes.
+- [CONTRIBUTING.md](CONTRIBUTING.md): development setup, tests and pull
+  requests.
+- [SECURITY.md](SECURITY.md): reporting vulnerabilities and safe use.
 
 ## Known limitations
 
@@ -262,7 +284,7 @@ docs/               User docs (webhooks, test-state endpoints) and design notes
   verifies webhook signatures needs verification disabled in the test
   environment.
 - Webhook event bodies are re-encoded with Go's `encoding/json`: keys are
-  sorted and `<`, `>`, `&` are escaped as `\u003c`, `\u003e`, `\u0026`.
+  sorted and `<`, `>`, `&` are escaped as `<`, `>`, `&`.
   The JSON values are identical, but the bytes differ from the YAML text.
 - Idempotency scenarios are validated exactly as in v0.1.1. Their header
   names and values are not syntax-checked at load time, so a header that
@@ -284,7 +306,7 @@ docs/               User docs (webhooks, test-state endpoints) and design notes
 | -------- | ------ |
 | Linux | Supported; CI runs gofmt, `go vet` and `go test -race` on Ubuntu. |
 | macOS | Supported; tested locally by the maintainer, not in CI. |
-| Windows | Builds, but is not tested in CI. Reports cannot be restricted to owner-only `0600` (Windows permissions do not map to Unix modes), so protect the report directory instead. The quickstarts use POSIX job control (`&`, `kill %1`); run the mock in a second terminal instead. |
+| Windows | Builds, but is not tested in CI. Reports cannot be restricted to owner-only `0600` (Windows permissions do not map to Unix modes), so protect the report directory instead. The quickstart uses POSIX shell features (`&`, `$!`, `sleep`): run `bin\mock-server.exe` in a second terminal instead and stop it with Ctrl+C. |
 
 ## Safety
 
@@ -312,7 +334,28 @@ What it does **not** do:
 
 For untrusted configs or shared CI runners, rely on network-level controls
 as well — e.g. run FlowGuard in a container or network namespace that can
-only reach the intended targets.
+only reach the intended targets. To report a vulnerability, see
+[SECURITY.md](SECURITY.md).
+
+## Project layout
+
+```
+cmd/flowguard/        CLI entry point
+internal/config/      YAML parsing and validation
+internal/runner/      Allow-listed HTTP execution
+internal/scenarios/   Scenario kinds (idempotency, webhook)
+internal/assertions/  Status, business-effect and state assertions
+internal/report/      JSON report generation
+examples/mock-server/ Local synthetic API and webhook receiver for demos
+tests/                End-to-end tests against the built binaries
+docs/                 User docs (webhooks, test-state endpoints) and design notes
+```
+
+## Contributing
+
+Bug reports, documentation fixes and pull requests are welcome; see
+[CONTRIBUTING.md](CONTRIBUTING.md). Please report security issues as
+described in [SECURITY.md](SECURITY.md), not in a public issue.
 
 ## License
 

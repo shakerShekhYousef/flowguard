@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a new scenario kind, assertion or improvement.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Automatic retries, delivery delays, timeout simulation, HMAC signing and
+        state polling are already planned for v0.3.0 (see the
+        [feature status](https://github.com/shakerShekhYousef/flowguard#feature-status)).
+        Comments on how you would use them are welcome; please add them to an
+        existing issue if there is one.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: The business-logic failure you want to catch, or what is hard to do today.
+      placeholder: My receiver must ignore an order.cancelled event that arrives before order.created, but ...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How you would like it to work. A sketch of the YAML config helps.
+      render: yaml
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use today, or other tools you tried.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and the planned features.
+          required: true

@@ -1,0 +1,67 @@
+name: Bug report
+description: FlowGuard behaves differently from its documentation.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. **Do not paste secrets, tokens, real customer
+        data or internal hostnames**: replace them with placeholders.
+        Security vulnerabilities belong in a private report, not here; see
+        [SECURITY.md](https://github.com/shakerShekhYousef/flowguard/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: FlowGuard version
+      description: Output of `flowguard version`.
+      placeholder: flowguard version v0.2.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Go version and operating system
+      description: Output of `go version`, plus your OS.
+      placeholder: go version go1.25.3 linux/amd64, Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What FlowGuard did, including the exit code.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What you expected instead, with a link to the documentation if it describes this case.
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Minimal config
+      description: The smallest flowguard.yaml that shows the problem, with secrets and hostnames replaced.
+      render: yaml
+  - type: textarea
+    id: output
+    attributes:
+      label: Command and output
+      description: The exact command and its terminal output (or the relevant part of the JSON report).
+      render: text
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: For example, which receiver or mock you ran it against. A reproduction against `examples/mock-server` is ideal.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed secrets, tokens, customer data and internal hostnames from everything above.
+          required: true
+        - label: I searched existing issues for this problem.
+          required: true
