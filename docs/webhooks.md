@@ -100,7 +100,9 @@ scenarios:
         charges: 1
 ```
 
-Run it from a checkout (POSIX shell; `&` and `kill %1` are job control):
+Run it from a checkout, which has the mock and the example config (POSIX
+shell; `&` and `kill %1` are job control). An installed v0.2.0 `flowguard`
+works in place of the local build:
 
 ```bash
 go build -o flowguard ./cmd/flowguard

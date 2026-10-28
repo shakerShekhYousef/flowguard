@@ -86,14 +86,14 @@ happened exactly once — not just whether the HTTP response looked fine.
 Requires Go 1.25.3 or newer.
 
 ```bash
-go install github.com/shakerShekhYousef/flowguard/cmd/flowguard@latest
-flowguard version
+go install github.com/shakerShekhYousef/flowguard/cmd/flowguard@v0.2.0
+flowguard version    # flowguard version v0.2.0
 ```
 
 The binary lands in `$(go env GOBIN)`, or `$(go env GOPATH)/bin` if `GOBIN`
 is unset; make sure that directory is on your `PATH`. The module path is
-case-sensitive: use `shakerShekhYousef` exactly as written. To pin a release,
-replace `@latest` with a tag such as `@v0.2.0`.
+case-sensitive: use `shakerShekhYousef` exactly as written. Use `@latest`
+instead of `@v0.2.0` to get the newest release.
 
 Or build from a checkout:
 
@@ -106,7 +106,9 @@ go build -o flowguard ./cmd/flowguard
 
 ## Idempotency quickstart
 
-Run from a checkout, after building `./flowguard` as shown above. The
+Run from a checkout, which has the bundled mock server and example configs,
+after building `./flowguard` as shown above (an installed `flowguard` works
+too). The
 commands use a POSIX shell (`&` starts the mock in the background and
 `kill %1` stops it); on Windows, run the mock in a second terminal instead.
 
